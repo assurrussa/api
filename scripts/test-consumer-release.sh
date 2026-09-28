@@ -7,7 +7,6 @@ trap 'rm -rf "$api_test_root"' EXIT
 export API_TEST_REAL_DATE
 API_TEST_REAL_DATE=$(command -v date)
 mkdir "$api_test_root/bin"
-ln -s "$BASH" "$api_test_root/bin/bash"
 
 cat > "$api_test_root/bin/git" <<'EOF'
 #!/usr/bin/env bash
@@ -114,6 +113,8 @@ case "$*" in
 esac
 EOF
 chmod +x "$api_test_root/bin/"*
+# Create this after chmod, which must only touch the generated command stubs.
+ln -s "$BASH" "$api_test_root/bin/bash"
 export PATH="$api_test_root/bin:$PATH"
 export API_TEST_STATE API_TEST_SCENARIO API_TEST_VERSION TMPDIR
 
