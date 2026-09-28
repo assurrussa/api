@@ -1,84 +1,86 @@
 # api
 
-Встраиваемое управление M2M-доступом для Go: выдача API-токенов, ротация,
-отзыв, блокировка интеграций и проверка разрешений. Каждый проект имеет
-собственный источник доступа, схему PostgreSQL и экземпляры кэша.
+[Русская версия](docs/README.ru.md)
 
-Go 1.27, toolchain 1.27.1. Проверяемый PostgreSQL — 18.6. Модуль:
-`github.com/assurrussa/api`. Пользовательские сессии, OAuth, административный
-HTTP API и интерфейс `goadmin` в первую версию не входят.
+Embeddable M2M access management for Go: API token issuance, rotation,
+revocation, integration bans, and permission checks. Each project has its
+own access source, PostgreSQL schema, and cache instances.
 
-## Установка и лицензия
+Go 1.27, toolchain 1.27.1. Tested PostgreSQL version: 18.6. Module:
+`github.com/assurrussa/api`. User sessions, OAuth, an administrative
+HTTP API, and a `goadmin` interface are outside the scope of the first version.
 
-Указывайте конкретную опубликованную версию:
+## Installation and license
+
+Specify an exact published version:
 
 ```sh
 go get github.com/assurrussa/api@v0.1.0
 ```
 
-Лицензия — [MIT](LICENSE). Поддерживаемые import paths: корневой пакет
-`github.com/assurrussa/api`, `postgres`, `httpapi`, `cache/arc` и `cache/rcu`
-под тем же префиксом. Версии `v0.x` позволяют уточнять публичный API до
-обязательств совместимости `v1`; изменения контракта описываются в release notes.
+License: [MIT](LICENSE). Supported import paths: the root package
+`github.com/assurrussa/api`, `postgres`, `httpapi`, `cache/arc`, and `cache/rcu`
+under the same prefix. Versions `v0.x` allow refinements to the public API
+before the compatibility commitments of `v1`; contract changes are described in release notes.
 
-## Модель доступа
+## Access model
 
-- `Client` — сервис или интеграция, его состояние и разрешённые scopes.
-- `Credential` — именованный доступ клиента с постоянным ID и собственными
-  scopes. Один клиент может иметь несколько независимых доступов.
-- `SecretVersion` — версия секрета с обязательным сроком. Ротация сохраняет
-  Credential, меняет секрет и увеличивает поколение.
-- `Principal` — проверенные идентификаторы и пересечение scopes клиента и
-  Credential. Проверки принадлежности заказов, файлов и других объектов
-  выполняет подключающий проект.
+- `Client`: a service or integration, its state, and its allowed scopes.
+- `Credential`: a named client credential with a permanent ID and its own
+  scopes. One client can have several independent credentials.
+- `SecretVersion`: a secret version with a mandatory expiration time. Rotation
+  preserves the Credential, replaces the secret, and increments the generation.
+- `Principal`: verified identifiers and the intersection of the client's and
+  Credential's scopes. The host project checks ownership of orders, files,
+  and other objects.
 
-Scopes являются точными строками, без wildcard и наследования ролей. Каталог
-задаётся через `Config.Scopes`; пустой набор разрешает аутентификацию, но не
-операции, требующие scopes. Middleware требует все перечисленные scopes.
-Каталог ограничивает новые административные назначения. Изменение каталога в
-конфигурации не отзывает уже сохранённые права: для отзыва измените scopes
-клиента через `SetClientScopes` либо отзовите Credential. При смешанном rollout
-версий конфигурации это правило одинаково для всех реплик.
+Scopes are exact strings, with no wildcards or role inheritance. The catalog
+is defined through `Config.Scopes`; an empty set allows authentication, but not
+operations that require scopes. Middleware requires all listed scopes.
+The catalog restricts new administrative assignments. Changing the configured
+catalog does not revoke permissions already stored: to revoke them, change the
+client's scopes through `SetClientScopes` or revoke the Credential. During a
+rollout with mixed configuration versions, this rule applies equally to all replicas.
 
-Токены содержат 256 случайных бит и непрозрачны для клиентов. В БД и кэшах
-хранятся SHA-256-проверочные значения случайных секретов. Проверка секрета
-выполняется constant-time. Полный токен возвращается только через `Issued`
-при выдаче и ротации; его нельзя восстановить или повторно показать.
-Не записывайте `Issued.Token`, Authorization и тела ответов выдачи в логи.
+Tokens contain 256 random bits and are opaque to clients. The database and caches
+store SHA-256 verification values of random secrets. Secret comparison is
+constant-time. The full token is returned only through `Issued` at issuance
+and rotation; it cannot be recovered or displayed again.
+Do not log `Issued.Token`, Authorization, or issuance response bodies.
 
-`DefaultTTL` и `MaxTTL` обязательны и задаются проектом. Нулевой TTL операции
-использует DefaultTTL; превышение MaxTTL отклоняется. Бессрочных токенов нет.
-PostgreSQL Store назначает время выдачи и начала grace после получения нужных
-блокировок; `Issued.ExpiresAt` содержит фактически записанный срок. Внешние
-Store могут реализовать опциональный `TimedStore` для той же семантики.
-Длительная запись или commit всё ещё расходуют часть TTL/grace до ответа;
-выбирайте сроки с запасом относительно бюджета операции.
-Истёкший Credential можно обновить административной ротацией, если он не
-отозван и клиент не заблокирован.
+`DefaultTTL` and `MaxTTL` are mandatory and set by the project. A zero operation
+TTL uses DefaultTTL; values above MaxTTL are rejected. Tokens cannot be permanent.
+The PostgreSQL Store sets the issuance time and grace start after acquiring the
+required locks; `Issued.ExpiresAt` contains the expiration time actually stored.
+External Store implementations can implement the optional `TimedStore` for the same semantics.
+A slow write or commit still consumes part of TTL/grace before the response;
+choose durations with enough margin for the operation budget.
+An expired Credential can be renewed through administrative rotation if it has
+not been revoked and the client is not banned.
 
-Ротация принимает `ExpectedGeneration` для защиты от конкурентных замен и
-`GracePeriod` для перехода. Ноль прекращает действие предыдущего текущего
-секрета. Положительный период ограничен его исходным сроком. Повторные
-ротации не продлевают ранее назначенные переходные сроки; одновременно могут
-оставаться несколько ещё не истёкших переходных версий.
+Rotation accepts `ExpectedGeneration` to protect against concurrent replacements
+and `GracePeriod` for the transition. Zero invalidates the previously current
+secret. A positive period is capped by that secret's original expiration time.
+Repeated rotations do not extend previously assigned transition deadlines;
+several unexpired transition versions may remain valid at the same time.
 
-Бан обратим: после разбана действующие неотозванные доступы снова работают.
-Отзыв Credential необратим и охватывает все его версии. `RevokeAll` отзывает
-все существующие доступы клиента; последующая новая выдача разрешена. Для
-компрометации используйте бан вместе с отзывом, если нужно запретить и новую
-выдачу. Уже допущенные запросы не отменяются задним числом.
+A ban is reversible: after unbanning, valid, unrevoked credentials work again.
+Credential revocation is irreversible and covers all of its versions. `RevokeAll`
+revokes all existing client credentials; subsequent issuance of new credentials
+is allowed. In a compromise, combine a ban with revocation if you also need to
+prevent new issuance. Requests already admitted are not canceled retroactively.
 
-## Подключение
+## Integration
 
-Проект владеет пулом БД, конфигурацией, миграционным запуском, TLS, ограничением
-частоты запросов и административной авторизацией. Все методы управления
-Service — доверенный Go API; публичного маршрута выдачи по обычному bearer нет.
+The project owns the database pool, configuration, migration execution, TLS,
+rate limiting, and administrative authorization. All Service management methods
+are a trusted Go API; there is no public issuance route using an ordinary bearer token.
 
 ```go
 store, err := postgres.New(pool, "orders_access")
 if err != nil { return err }
 
-// Вызывать в явном миграционном шаге, а не при каждом старте web-реплики.
+// Call in an explicit migration step, not on every web replica startup.
 if err := store.Migrate(ctx); err != nil { return err }
 
 service, err := api.New(store, api.Config{
@@ -89,105 +91,105 @@ service, err := api.New(store, api.Config{
 if err != nil { return err }
 defer service.Close()
 
-// Для строгого режима Start необязателен; для кэшей запускает их lifecycle.
+// Start is optional in strict mode; for caches, it starts their lifecycle.
 if err := service.Start(ctx); err != nil { return err }
 
 mux.Handle("GET /orders",
     httpapi.Middleware(service, "orders:read")(ordersHandler))
 ```
 
-Поддерживаемые импорты: корневой `api`, `postgres`, `httpapi`, `cache/arc` и
-`cache/rcu`. Публичные Store/Source/Cache позволяют подключать адаптеры;
-контракты согласованности описаны в Go doc интерфейсов. Кэши возвращают
-данные единому валидатору и сами не предоставляют права.
+Supported imports: the root `api` package, `postgres`, `httpapi`, `cache/arc`, and
+`cache/rcu`. Public Store/Source/Cache interfaces support custom adapters;
+consistency contracts are documented in the interfaces' Go doc. Caches return
+data to a shared validator and do not grant permissions themselves.
 
-`New` не обращается к сети и не запускает goroutine. `Start` вызывается один
-раз; отмена его контекста прекращает обслуживание. `Close` идемпотентен,
-отменяет и дожидается работников и операций, включая незавершённый Start.
-После Close повторный запуск невозможен. Сначала завершайте входящие HTTP
-запросы, затем закрывайте Service и пул БД. Через `Errors()` доступны также
-ограниченные по частоте сообщения о сбоях LISTEN и фонового RCU refresh;
-канал не является счётчиком каждой попытки.
+`New` does not access the network or start goroutines. `Start` is called once;
+canceling its context stops service operation. `Close` is idempotent,
+cancels and waits for workers and operations, including an unfinished Start.
+The Service cannot be restarted after Close. Finish incoming HTTP requests
+first, then close the Service and database pool. `Errors()` also exposes
+rate-limited reports of LISTEN failures and background RCU refresh failures;
+the channel is not a counter of every attempt.
 
-Каждый проект использует отдельную схему. Имя схемы явно передаётся в
-`postgres.New`; имена с префиксом `pg_` запрещены. Миграции встроены в адаптер,
-версионируются и применяются транзакционно под advisory lock. Все чтения
-верификатора должны идти в primary; пул с неограниченно отстающими read replicas
-не соответствует контракту. Записи состояния выполняются через Store/Service.
+Each project uses a separate schema. The schema name is passed explicitly to
+`postgres.New`; names with the `pg_` prefix are forbidden. Migrations are embedded
+in the adapter, versioned, and applied transactionally under an advisory lock.
+All verifier reads must go to the primary; a pool with read replicas whose lag
+is unbounded does not satisfy the contract. State writes go through Store/Service.
 
-Административные методы: `CreateClient`, `Client`, `Clients`, `SetClientScopes`,
+Administrative methods: `CreateClient`, `Client`, `Clients`, `SetClientScopes`,
 `SetClientBanned`, `Issue`, `Rotate`, `Credential`, `Credentials`, `Revoke`,
-`RevokeAll`. Списки используют keyset-пагинацию по ID с `after` и лимитом
-1–1000. Для `goadmin` эти методы следует обернуть его административной
-авторизацией; бизнес-токены не заменяют авторизацию оператора.
+`RevokeAll`. Lists use ID-based keyset pagination with `after` and a limit of
+1–1000. For `goadmin`, wrap these methods in its administrative authorization;
+business tokens do not replace operator authorization.
 
-PostgreSQL сохраняет историю версий секрета. Для выбранного проектом срока
-хранения вызывайте `Store.PruneExpiredVersions(ctx, cutoff, batchSize)` из
-административного задания повторными небольшими пакетами. Метод удаляет только
-истёкшие исторические версии; текущую версию Credential он сохраняет даже
-после истечения, чтобы административная ротация оставалась возможной. Перед
-включением очистки определите срок хранения для аудита.
+PostgreSQL retains secret version history. For the retention period chosen by
+the project, call `Store.PruneExpiredVersions(ctx, cutoff, batchSize)` from an
+administrative job in repeated small batches. The method deletes only expired
+historical versions; it preserves the current Credential version even after
+expiration so that administrative rotation remains possible. Define the audit
+retention period before enabling cleanup.
 
-## Строгая проверка, ARC и RCU
+## Strict verification, ARC, and RCU
 
-По умолчанию каждый запрос читает согласованное состояние из PostgreSQL.
-Новая проверка после подтверждённого отзыва учитывает его. Ошибка хранилища
-не превращается в разрешение доступа.
+By default, every request reads consistent state from PostgreSQL.
+A new verification after confirmed revocation observes it. A storage error
+does not grant access.
 
-Кэш включается явно:
+Enable caching explicitly:
 
 ```go
-// До 10 000 востребованных записей, максимально 10 секунд устаревания.
+// Up to 10,000 frequently used entries, with at most 10 seconds of staleness.
 api.WithCache(arc.Factory(10_000), 10*time.Second)
 
-// Полная проекция: обновление каждые 30 секунд, максимум 2 минуты устаревания.
+// Full projection: refresh every 30 seconds, with at most 2 minutes of staleness.
 api.WithCache(rcu.Factory(30*time.Second), 2*time.Minute)
 
-// Та же частота, но отдельный бюджет 60 секунд на начальную и фоновую загрузку.
+// Same interval, with a separate 60-second budget for initial and background loads.
 api.WithCache(rcu.FactoryWithTimeout(30*time.Second, 60*time.Second), 2*time.Minute)
 ```
 
-Это опции для `api.New`. Одновременно выбирается один адаптер; если указано
-несколько WithCache, применяется последний. Используется `gocache v0.2.1`.
+These are options for `api.New`. One adapter is selected at a time; if several
+WithCache options are supplied, the last one applies. Uses `gocache v0.2.1`.
 
-- ARC ограничивает ёмкость и загружает записи по промаху. TTL jitter отключён.
-- RCU загружает полный неизменяемый снимок; интервал обновления должен быть
-  положительным и меньше MaxStaleness. `Factory` для совместимости использует
-  его также как timeout загрузки; `FactoryWithTimeout` задаёт отдельный
-  положительный timeout ниже MaxStaleness. После ошибки планировщик откладывает
-  событийные и периодические повторы на backoff с jitter, не теряя одну
-  ожидающую инвалидацию. Начальная ошибка загрузки прерывает Start.
-- MaxStaleness задаётся проектом и может составлять секунды или минуты.
-  Возраст отсчитывается от начала чтения, а не от публикации в кэш.
-- Попадание в кэш, обновление TTL и уведомление не продлевают доверие к данным.
-  Просроченное состояние требует чтения primary; при ошибке возвращается
-  инфраструктурный отказ. Срок секрета проверяется независимо от срока кэша.
-- Локальная инвалидация увеличивает поколение. Старые загрузки и снимки не
-  могут разрешить доступ после уже обработанного изменения.
+- ARC limits capacity and loads entries on a miss. TTL jitter is disabled.
+- RCU loads a complete immutable snapshot; the refresh interval must be
+  positive and below MaxStaleness. For compatibility, `Factory` also uses
+  that interval as the load timeout; `FactoryWithTimeout` sets a separate
+  positive timeout below MaxStaleness. After a failure, the scheduler delays
+  event-driven and periodic retries using backoff with jitter, without losing
+  one pending invalidation. An initial load failure aborts Start.
+- MaxStaleness is set by the project and can be seconds or minutes.
+  Age is measured from the start of the read, not from publication to the cache.
+- Cache hits, TTL refreshes, and notifications do not extend trust in the data.
+  Stale state requires a primary read; a failure returns an infrastructure error.
+  Secret expiration is checked independently of cache expiration.
+- Local invalidation increments the generation. Old loads and snapshots cannot
+  grant access after a change has already been processed.
 
-Изменения транзакционно отправляют PostgreSQL NOTIFY. Каждый кэшированный
-Service открывает **одну дополнительную выделенную connection** для LISTEN,
-вне лимита MaxConns переданного пула. Его `BeforeConnect` и `AfterConnect`
-применяются и к LISTEN. При восстановлении соединения проекция
-инвалидируется. Уведомления best-effort: пропуск события ограничен MaxStaleness,
-а не обещанием мгновенного отзыва. Строгий режим listener не открывает.
+Changes send PostgreSQL NOTIFY transactionally. Each cached Service opens
+**one additional dedicated connection** for LISTEN, outside the MaxConns limit
+of the supplied pool. Its `BeforeConnect` and `AfterConnect` also apply to LISTEN.
+The projection is invalidated when the connection is restored. Notifications
+are best-effort: a missed event is bounded by MaxStaleness, rather than a promise
+of immediate revocation. Strict mode does not open a listener.
 
-В первой версии любое изменение инвалидирует всю локальную проекцию. ARC
-после этого загружает востребованные записи, RCU перестраивает снимок.
-Неизвестный токен в свежем RCU-снимке не запускает полную перезагрузку;
-отрицательные ответы не кэшируются. Частые изменения могут свести выгоду
-кэширования к нулю. Приложение должно ограничивать входящий поток невалидных
-токенов; пакет не является rate limiter.
+In the first version, any change invalidates the entire local projection. ARC
+then loads entries as needed, while RCU rebuilds its snapshot.
+An unknown token in a fresh RCU snapshot does not trigger a full reload;
+negative responses are not cached. Frequent changes can eliminate the benefit
+of caching. The application must limit incoming invalid tokens; the package
+is not a rate limiter.
 
-HTTP принимает ровно один заголовок `Authorization: Bearer …`. Токены из URL,
-cookie или тела не поддерживаются. Ответы: 401 — недействительный доступ,
-403 — недостаточные scopes, 503 — достоверная проверка невозможна. В ответах
-нет внутренних ошибок БД или подробностей бана.
+HTTP accepts exactly one `Authorization: Bearer …` header. Tokens from URLs,
+cookies, or request bodies are not supported. Responses: 401 for invalid access,
+403 for insufficient scopes, and 503 when reliable verification is impossible.
+Responses do not expose internal database errors or ban details.
 
-## Рабочий пример
+## Working example
 
-Используйте отдельную локальную БД; `sslmode=disable` ниже предназначен только
-для локального примера. Внешние API должны обслуживаться через HTTPS.
+Use a separate local database; `sslmode=disable` below is intended only for
+the local example. External APIs must be served over HTTPS.
 
 ```sh
 export API_DATABASE_URL='postgres://USER:PASSWORD@127.0.0.1:5432/DATABASE?sslmode=disable'
@@ -198,14 +200,14 @@ go run ./examples/access issue -client CLIENT_ID -name reader -scopes orders:rea
 go run ./examples/access serve -cache arc -max-staleness 10s
 ```
 
-Для RCU пример принимает `-refresh` и `-snapshot-timeout`. Нулевой
-`-snapshot-timeout` сохраняет прежний режим, где бюджет загрузки равен
-`-refresh`; при отдельном timeout оба значения должны быть меньше
+For RCU, the example accepts `-refresh` and `-snapshot-timeout`. A zero
+`-snapshot-timeout` preserves the previous mode, where the load budget equals
+`-refresh`; with a separate timeout, both values must be below
 `-max-staleness`.
 
-Сохраните выданный токен в хранилище секретов интеграции. Пример выдаёт его в
-JSON только один раз. `GET /orders` проверяет `orders:read` и возвращает Principal.
-Административных HTTP-endpoints нет; bind по умолчанию — `127.0.0.1:8080`.
+Save the issued token in the integration's secret store. The example returns it
+in JSON only once. `GET /orders` checks `orders:read` and returns the Principal.
+There are no administrative HTTP endpoints; the default bind address is `127.0.0.1:8080`.
 
 ```sh
 go run ./examples/access rotate -credential CREDENTIAL_ID -generation 1 -grace 10m
@@ -218,17 +220,18 @@ go run ./examples/access clients -limit 100
 go run ./examples/access credentials -client CLIENT_ID -limit 100
 ```
 
-TTL-политика примера: 24 часа по умолчанию, максимум 30 дней. Это конфигурация
-примера, а не скрытые значения библиотеки. Если ответ выдачи потерян после
-commit, секрет восстановить нельзя: ротируйте соответствующий доступ либо
-отзовите его и выдайте новый. Списки возвращают метаданные, без секретов и хэшей.
+The example's TTL policy is 24 hours by default, with a maximum of 30 days.
+This is example configuration, not hidden library defaults. If the issuance
+response is lost after commit, the secret cannot be recovered: rotate the
+corresponding credential, or revoke it and issue a new one. Lists return
+metadata, without secrets or hashes.
 
-## Проверки
+## Checks
 
-Нужен `golangci-lint` версии из `.golangci-lint-version` (2.13.1). Gate и
-`make lint` / `make lint-fix` проверяют точное совпадение версии: сначала
-используют `bin/golangci-lint`, затем бинарник из `PATH`. Установка закреплённого
-официального бинарника из корня репозитория:
+Requires the `golangci-lint` version from `.golangci-lint-version` (2.13.1).
+The gate and `make lint` / `make lint-fix` check for an exact version match:
+they first use `bin/golangci-lint`, then the binary from `PATH`. To install
+the pinned official binary from the repository root:
 
 ```sh
 api_lint_version=$(cat .golangci-lint-version)
@@ -239,106 +242,109 @@ rm "$api_lint_installer"
 bash scripts/lint.sh version
 ```
 
-Установщик проверяет checksum release-архива. Обычные проверки используют
-установленный бинарник без повторной загрузки.
+The installer verifies the release archive checksum. Regular checks use the
+installed binary without downloading it again.
 
 ```sh
 make check
 ```
 
-Gate проверяет закреплённый `golangci-lint`, форматирование, vet, все race-тесты с PostgreSQL, внешний
-consumer probe и процессный E2E. Если `API_TEST_DATABASE_URL` не задан, script поднимает
-изолированный `postgres:18.6-alpine` с временным портом и удаляет контейнер
-после проверки. При явном URL используйте выделенную тестовую БД: тесты
-создают и удаляют только свои уникальные схемы.
+The gate checks the pinned `golangci-lint`, formatting, vet, all race tests with PostgreSQL,
+the external consumer probe, and process E2E. If `API_TEST_DATABASE_URL` is not set,
+the script starts an isolated `postgres:18.6-alpine` container with a temporary port
+and removes it after the check. With an explicit URL, use a dedicated test database:
+tests create and remove only their own unique schemas.
 
-`make unit` без URL пропускает PostgreSQL-тесты и не заменяет `make check`.
-GitHub workflow устанавливает ту же версию `golangci-lint`, запускает полный
-gate и закреплённый `govulncheck` для PR в
-`main` и push в `main`; отдельно раз в неделю запускается минутный fuzz
-парсера токена. Обязательность статуса при merge задаётся в настройках ветки.
-Consumer probe использует временный модуль с локальным `replace`; он доказывает
-публичную поверхность текущего checkout. Для проверки опубликованной версии:
+`make unit` without a URL skips PostgreSQL tests and does not replace `make check`.
+The GitHub workflow installs the same `golangci-lint` version, runs the full
+gate and pinned `govulncheck` for PRs targeting
+`main` and pushes to `main`; separately, it runs a one-minute token parser fuzz
+test once a week. Required merge status is configured in branch settings.
+The consumer probe uses a temporary module with a local `replace`; it proves
+the public surface of the current checkout. To check a published version:
 
 ```sh
 make consumer-release API_VERSION=v0.1.0
 ```
 
-Эта команда использует Go 1.27.1, отдельный временный модуль и свежий кеш
-зависимостей, отключает workspace, локальные Go-настройки и частные module
-overrides. Загрузка идёт через `proxy.golang.org` с проверкой `sum.golang.org`.
-Probe проверяет точную версию, отсутствие действующих замен в consumer-графе
-и директив `replace` в скачанном `go.mod` самого `api`, контрольные суммы,
-поддерживаемые imports, создание Service в режимах strict, ARC и RCU, тесты
-и сборку. `go list -m all` не показывает директивы внутри зависимостей: Go их
-игнорирует. Поэтому опубликованный manifest отдельно читается через
-`go mod edit -json` без изменения файла. Нужен доступ к публичным Go-сервисам; `latest`, имена
-веток и пустая версия отклоняются. Временный модуль и его кеш удаляются при выходе.
+This command uses Go 1.27.1, a separate temporary module, and a fresh dependency
+cache, and disables the workspace, local Go settings, and private module overrides.
+Downloads use `proxy.golang.org` with verification through `sum.golang.org`.
+The probe checks the exact version, absence of active replacements in the consumer
+graph and `replace` directives in `api`'s downloaded `go.mod`, checksums,
+supported imports, Service creation in strict, ARC, and RCU modes, tests,
+and builds. `go list -m all` does not show directives inside dependencies: Go
+ignores them. The published manifest is therefore read separately through
+`go mod edit -json` without changing the file. Access to public Go services is required;
+`latest`, branch names, and an empty version are rejected. The temporary module
+and its cache are removed on exit.
 
-### Выпуск версии
+### Releasing a version
 
-1. Подготовить изменения в ветке и выполнить `make check`. Создать PR в
-   `main`, пройти обязательный review и дождаться зелёного CI после merge.
-2. До публикации тега проверить release probe на точной канонической
-   псевдоверсии публичного коммита, полученной через
+1. Prepare changes on a branch and run `make check`. Create a PR targeting
+   `main`, complete the required review, and wait for green CI after merge.
+2. Before publishing the tag, check the release probe against the exact canonical
+   pseudo-version of the public commit, obtained through
    `go list -m -f '{{.Version}}' github.com/assurrussa/api@<commit-sha>`.
-3. Создать аннотированный тег выбранной версии на проверенном merge-коммите,
-   опубликовать его и проверить соответствие коммита.
-4. Выполнить `make consumer-release API_VERSION=<version>`. При задержке
-   доступности версии через proxy повторить загрузку не более пяти раз с
-   интервалом 15 секунд. Ошибки контрольных сумм, совместимости или тестов
-   останавливают выпуск.
-5. После успешной проверки опубликовать GitHub Release с commit SHA,
-   требованиями и фактически выполненными проверками.
+3. Create an annotated tag for the chosen version on the verified merge commit,
+   publish it, and verify that it points to the correct commit.
+4. Run `make consumer-release API_VERSION=<version>`. If availability through
+   the proxy is delayed, retry the download at most five times with a
+   15-second interval. Checksum, compatibility, or test failures stop the release.
+5. After successful verification, publish a GitHub Release with the commit SHA,
+   requirements, and checks actually performed.
 
-Опубликованные Go-версии неизменяемы: тег нельзя переносить или пересоздавать.
-Исправления опубликованного выпуска получают новую версию. Release probe
-подтверждает внешнее потребление модуля; production-пилот в реальном сервисе
-проверяется отдельно.
+Published Go versions are immutable: tags must not be moved or recreated.
+Fixes to a published release receive a new version. The release probe
+confirms external consumption of the module; a production pilot in a real
+service is verified separately.
 
-Процессный E2E можно выполнить отдельно:
+Process E2E can be run separately:
 
 ```sh
 make e2e
 ```
 
-Нужны Go, Bash и работающий Docker. Скрипт создаёт собственный PostgreSQL
-18.6 с временным loopback-портом, собирает CLI с race detector и запускает
-две HTTP-реплики для каждого режима: strict, ARC и RCU. `API_DATABASE_URL`,
-`API_SCHEMA`, `API_TEST_DATABASE_URL` и локальный файл демо не определяют
-базу этого стенда: E2E всегда использует свой контейнер. Токены остаются в
-памяти теста, в отчёт попадают имена сценариев и результаты.
+Requires Go, Bash, and a working Docker installation. The script creates its own
+PostgreSQL 18.6 instance with a temporary loopback port, builds the CLI with the
+race detector, and starts two HTTP replicas for each mode: strict, ARC, and RCU.
+`API_DATABASE_URL`, `API_SCHEMA`, `API_TEST_DATABASE_URL`, and the local demo file
+do not determine the database used by this setup: E2E always uses its own
+container. Tokens remain in test memory; the report contains scenario names
+and results.
 
-Проверяются выдача и административные отказы, HTTP 200/401/403/503,
-пересечение scopes, бан/разбан, ротация с нулевым и положительным grace,
-TTL и его независимость от кэша, конкурентная ротация, необратимый отзыв,
-`revoke-all` с последующей выдачей, пагинация и изоляция схем. Дополнительные
-неисправности: изменение authoritative state без NOTIFY, завершение только
-своего LISTEN backend, остановка PostgreSQL, отказ начального RCU-снимка и
-восстановление проверки без перезапуска HTTP-процессов.
+Checks cover issuance and administrative rejections, HTTP 200/401/403/503,
+scope intersection, bans/unbans, rotation with zero and positive grace,
+TTL and its independence from the cache, concurrent rotation, irreversible
+revocation, `revoke-all` followed by issuance, pagination, and schema isolation.
+Additional failures: authoritative state changes without NOTIFY, termination
+of only the Service's own LISTEN backend, PostgreSQL shutdown, initial RCU
+snapshot failure, and recovery of verification without restarting HTTP processes.
 
-Ожидания ограничены таймаутами; HTTP-процессы завершаются при очистке тестов.
-Shell trap удаляет контейнер с его анонимным томом и завершает оставшиеся
-процессы группы тестового запуска, в том числе после ошибки или таймаута
-`go test`. Данные E2E одноразовые. Проверка использует локальный HTTP;
-TLS, внешний reverse proxy, сетевые разделения и устойчивая нагрузка в этот
-набор не входят. [Матрица E2E](docs/e2e.md) описывает критерии и границы.
+Waits are bounded by timeouts; HTTP processes are stopped during test cleanup.
+The shell trap removes the container and its anonymous volume and terminates
+remaining processes in the test run's process group, including after a
+`go test` failure or timeout. E2E data is disposable. The check uses local HTTP;
+TLS, an external reverse proxy, network partitions, and sustained load are
+outside this suite. The [E2E matrix](docs/e2e.md) describes criteria and limits.
 
 ```sh
 API_TEST_DATABASE_URL='postgres://…' make bench
 ```
 
-Бенчмарки используют реальные PostgreSQL-запросы и 1/10/100 тысяч доступов,
-рабочий набор из 128 токенов, ARC ёмкостью 1024 и один последовательный поток.
-Сравниваются чтения без изменений и одна мутация на 100 проверок. Отчёт
-включает среднее время, выборочные p50/p95 проверок, allocations, чтения и
-снимки БД. Время мутации входит в ns/op, но не в выборочные p50/p95 проверки.
-`init-allocated-B` — суммарные аллокации инициализации и прогрева, **не** retained
-heap/RSS. `BenchmarkPostgresSnapshot` измеряет полную загрузку из БД отдельно.
-Это сравнение сценариев, а не production SLO или предел устойчивой нагрузки.
-Измеренные результаты и ограничения: [отчёт о бенчмарках](docs/benchmarks.md).
+Benchmarks use real PostgreSQL queries and 1/10/100 thousand credentials,
+a working set of 128 tokens, ARC capacity of 1024, and one sequential stream.
+They compare reads without changes and one mutation per 100 verifications.
+The report includes mean time, sampled verification p50/p95, allocations,
+database reads, and database snapshots. Mutation time is included in ns/op,
+but not in sampled verification p50/p95.
+`init-allocated-B` is the total allocation during initialization and warmup,
+**not** retained heap/RSS. `BenchmarkPostgresSnapshot` measures the full database
+load separately. This compares scenarios; it is not a production SLO or a
+sustainable load limit. Measured results and limitations:
+[benchmark report](docs/benchmarks.md).
 
-Транзитивный `golang.org/x/text` закреплён на v0.39.0 для исправления
-[GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970). Проверка уязвимостей должна
-повторяться при изменении зависимостей. Сроки токенов требуют синхронизированных
-часов серверов; монотонный возраст локального кэша не зависит от коррекции часов.
+The transitive dependency `golang.org/x/text` is pinned to v0.39.0 to fix
+[GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970). Vulnerability checks must be
+repeated when dependencies change. Token expiration requires synchronized
+server clocks; the monotonic age of the local cache is unaffected by clock adjustments.
