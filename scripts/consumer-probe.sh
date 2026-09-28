@@ -52,7 +52,12 @@ package consumerprobe
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -92,11 +97,65 @@ func TestPublicConstruction(t *testing.T) {
 		})
 	}
 }
+
+func manifestHasReplacements(ctx context.Context, path string) (bool, error) {
+	output, err := exec.CommandContext(ctx, "go", "mod", "edit", "-json", path).CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("parse module manifest: %w: %s", err, output)
+	}
+	var manifest struct {
+		Replace []json.RawMessage
+	}
+	if err := json.Unmarshal(output, &manifest); err != nil {
+		return false, fmt.Errorf("decode module manifest: %w", err)
+	}
+	return len(manifest.Replace) != 0, nil
+}
+
+func TestPublishedModuleManifest(t *testing.T) {
+	path := os.Getenv("API_PROBE_PUBLISHED_GO_MOD")
+	if path == "" {
+		t.Skip("published manifest is checked in release mode")
+	}
+	hasReplacements, err := manifestHasReplacements(t.Context(), path)
+	if err != nil { t.Fatal(err) }
+	if hasReplacements {
+		t.Fatal("published api go.mod contains replace directives")
+	}
+}
+
+func TestManifestReplacementDetection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		directive string
+		wantReplacements bool
+		wantErr bool
+	}{
+		{name: "no_replace"},
+		{name: "comment", directive: "// replace example.com/unused => ../workspace"},
+		{name: "single", directive: "replace example.com/unused => ../workspace", wantReplacements: true},
+		{name: "block", directive: "replace (\nexample.com/unused v1.0.0 => example.com/published v1.0.1\n)", wantReplacements: true},
+		{name: "malformed", directive: "replace (", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "go.mod")
+			content := "module example.com/manifest\n\ngo 1.27.0\n\n" + tc.directive + "\n"
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil { t.Fatal(err) }
+			hasReplacements, err := manifestHasReplacements(t.Context(), path)
+			if (err != nil) != tc.wantErr { t.Fatalf("unexpected parse error: %v", err) }
+			if hasReplacements != tc.wantReplacements { t.Fatalf("got replacements=%v", hasReplacements) }
+			after, err := os.ReadFile(path)
+			if err != nil { t.Fatal(err) }
+			if string(after) != content { t.Fatal("module manifest was modified") }
+		})
+	}
+}
 EOF
 (
   cd "$module_dir"
   go version
   go mod tidy
+  export API_PROBE_PUBLISHED_GO_MOD=''
   if [ -n "$api_probe_version" ]; then
     api_resolved_version=$(go list -m -f '{{.Version}}' github.com/assurrussa/api)
     if [ "$api_resolved_version" != "$api_probe_version" ]; then
@@ -108,6 +167,11 @@ EOF
       printf 'Unexpected module replacements:\n%s\n' "$api_replaced_modules" >&2
       exit 1
     fi
+    API_PROBE_PUBLISHED_GO_MOD=$(go list -m -f '{{.GoMod}}' github.com/assurrussa/api)
+    if [ -z "$API_PROBE_PUBLISHED_GO_MOD" ]; then
+      printf '%s\n' 'Published api go.mod was not found.' >&2
+      exit 1
+    fi
     go mod verify
     go list -m -f '{{.Path}} {{.Version}} {{.Sum}} {{.GoModSum}}' github.com/assurrussa/api
   fi
@@ -115,7 +179,7 @@ EOF
   go build ./...
 )
 if [ -n "$api_probe_version" ]; then
-  printf 'Published consumer probe passed: github.com/assurrussa/api@%s (no replacements, fresh module cache).\n' "$api_probe_version"
+  printf 'Published consumer probe passed: github.com/assurrussa/api@%s (no effective replacements or published api replace directives, fresh module cache).\n' "$api_probe_version"
 else
   printf '%s\n' 'Local consumer probe passed (temporary module with local replace; not published-version evidence).'
 fi
