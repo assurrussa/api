@@ -249,8 +249,9 @@ installed binary without downloading it again.
 make check
 ```
 
-The gate checks the pinned `golangci-lint`, formatting, vet, all race tests with PostgreSQL,
-the external consumer probe, and process E2E. If `API_TEST_DATABASE_URL` is not set,
+The gate checks release-script regressions, the pinned `golangci-lint`, formatting,
+vet, all race tests with PostgreSQL, the external consumer probe, and process E2E.
+If `API_TEST_DATABASE_URL` is not set,
 the script starts an isolated `postgres:18.6-alpine` container with a temporary port
 and removes it after the check. With an explicit URL, use a dedicated test database:
 tests create and remove only their own unique schemas.
@@ -266,6 +267,20 @@ the public surface of the current checkout. To check a published version:
 ```sh
 make consumer-release API_VERSION=v0.1.0
 ```
+
+Requires Git and curl. For tagged versions, the command first checks the tag in
+the public Git repository. An unpublished tag fails immediately, before querying
+Go services. Canonical pseudo-versions remain supported for pre-tag checks.
+
+The command automatically waits for the version's metadata, manifest, archive,
+and checksum record to become available in the public Go services. It uses
+lightweight HEAD requests, reports progress, and honors cache lifetimes and
+`Retry-After`. The wait is bounded to 35 minutes by default; set
+`API_RELEASE_WAIT_TIMEOUT` to a limit in seconds (1..86400) to change it.
+An early request made before a tag exists can leave a
+[cached 404 for up to 30 minutes](https://proxy.golang.org/).
+Only after availability is confirmed does the clean consumer probe start.
+Checksum, compatibility, and test failures stop immediately rather than being retried.
 
 This command uses Go 1.27.1, a separate temporary module, and a fresh dependency
 cache, and disables the workspace, local Go settings, and private module overrides.
@@ -288,9 +303,9 @@ and its cache are removed on exit.
    `go list -m -f '{{.Version}}' github.com/assurrussa/api@<commit-sha>`.
 3. Create an annotated tag for the chosen version on the verified merge commit,
    publish it, and verify that it points to the correct commit.
-4. Run `make consumer-release API_VERSION=<version>`. If availability through
-   the proxy is delayed, retry the download at most five times with a
-   15-second interval. Checksum, compatibility, or test failures stop the release.
+4. Run `make consumer-release API_VERSION=<version>`. The command automatically
+   waits for public Go services and then checks the version with a fresh cache.
+   A timeout or a checksum, compatibility, or test failure stops the release.
 5. After successful verification, publish a GitHub Release with the commit SHA,
    requirements, and checks actually performed.
 

@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export GOWORK=off
 
+bash scripts/test-consumer-release.sh
 bash scripts/lint.sh run --timeout=5m ./...
 
 api_test_container=''
