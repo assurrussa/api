@@ -16,6 +16,9 @@ if [ "$#" -ne 0 ]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [ -n "$api_probe_version" ]; then
+  bash "$repo_root/scripts/wait-release.sh" "$api_probe_version"
+fi
 probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/api-consumer-probe.XXXXXX")"
 cleanup() {
   # Downloaded module directories are read-only by default.

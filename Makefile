@@ -1,4 +1,4 @@
-.PHONY: check unit bench consumer consumer-release e2e lint lint-fix
+.PHONY: check unit bench consumer consumer-release consumer-release-test e2e lint lint-fix
 
 check:
 	bash scripts/check.sh
@@ -21,6 +21,9 @@ consumer:
 
 consumer-release:
 	bash scripts/consumer-probe.sh --version "$${API_VERSION:-}"
+
+consumer-release-test:
+	bash scripts/test-consumer-release.sh
 
 e2e:
 	bash scripts/e2e.sh
