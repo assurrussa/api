@@ -99,7 +99,7 @@ type Store interface {
 	// mismatched generation. Only the preceding current secret's expiry is
 	// shortened to min(original expiry, at+grace). Older deadlines never extend.
 	Rotate(
-		ctx context.Context, credID string, expectedGeneration int64, version SecretVersion, ttl time.Duration, at time.Time,
+		ctx context.Context, credID string, expectedGeneration int64, version SecretVersion, gracePeriod time.Duration, at time.Time,
 	) (Credential, error)
 	Revoke(ctx context.Context, id string, at time.Time) error
 	RevokeAll(ctx context.Context, clientID string, at time.Time) error
