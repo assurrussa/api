@@ -1,0 +1,27 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/assurrussa/api
+cpu: Apple M5 Pro
+BenchmarkPostgresVerification/records=1000/strict/churn=false-15         	    2287	    255651 ns/op	         1.000 db_reads/op	         0 db_scans/op	    635192 init-allocated-B	    233417 p50-ns	    358958 p95-ns	    4948 B/op	      63 allocs/op
+BenchmarkPostgresVerification/records=1000/strict/churn=true-15          	    2238	    295047 ns/op	         1.000 db_reads/op	         0 db_scans/op	    635128 init-allocated-B	    248750 p50-ns	    439583 p95-ns	    4986 B/op	      63 allocs/op
+BenchmarkPostgresVerification/records=1000/arc/churn=false-15            	  655292	      1120 ns/op	         0 db_reads/op	         0 db_scans/op	    790736 init-allocated-B	       833.0 p50-ns	      1167 p95-ns	     320 B/op	       8 allocs/op
+BenchmarkPostgresVerification/records=1000/arc/churn=true-15             	    2005	    295112 ns/op	         1.000 db_reads/op	         0 db_scans/op	    790368 init-allocated-B	    258958 p50-ns	    388375 p95-ns	    6008 B/op	      67 allocs/op
+BenchmarkPostgresVerification/records=1000/rcu/churn=false-15            	 1377013	       434.1 ns/op	         0 db_reads/op	         0 db_scans/op	   1756440 init-allocated-B	       375.0 p50-ns	       542.0 p95-ns	     320 B/op	       8 allocs/op
+BenchmarkPostgresVerification/records=1000/rcu/churn=true-15             	    9680	     57854 ns/op	         0.04070 db_reads/op	         0.02004 db_scans/op	   1756200 init-allocated-B	       500.0 p50-ns	      3625 p95-ns	   34694 B/op	     430 allocs/op
+BenchmarkPostgresVerification/records=10000/strict/churn=false-15        	    2461	    270007 ns/op	         1.000 db_reads/op	         0 db_scans/op	    635144 init-allocated-B	    240458 p50-ns	    408541 p95-ns	    4947 B/op	      63 allocs/op
+BenchmarkPostgresVerification/records=10000/strict/churn=true-15         	    2145	    266074 ns/op	         1.000 db_reads/op	         0 db_scans/op	    635144 init-allocated-B	    230792 p50-ns	    361291 p95-ns	    4985 B/op	      63 allocs/op
+BenchmarkPostgresVerification/records=10000/arc/churn=false-15           	  652947	       860.2 ns/op	         0 db_reads/op	         0 db_scans/op	    790256 init-allocated-B	       750.0 p50-ns	      1000 p95-ns	     320 B/op	       8 allocs/op
+BenchmarkPostgresVerification/records=10000/arc/churn=true-15            	    1999	    298202 ns/op	         1.000 db_reads/op	         0 db_scans/op	    790256 init-allocated-B	    263917 p50-ns	    404000 p95-ns	    6008 B/op	      67 allocs/op
+BenchmarkPostgresVerification/records=10000/rcu/churn=false-15           	 1313426	       451.0 ns/op	         0 db_reads/op	         0 db_scans/op	  16798728 init-allocated-B	       416.0 p50-ns	       625.0 p95-ns	     320 B/op	       8 allocs/op
+BenchmarkPostgresVerification/records=10000/rcu/churn=true-15            	    1891	    547704 ns/op	         0.6007 db_reads/op	         0.02010 db_scans/op	  16798840 init-allocated-B	    450750 p50-ns	   1698000 p95-ns	  331015 B/op	    4153 allocs/op
+BenchmarkPostgresVerification/records=100000/strict/churn=false-15       	    2244	    267270 ns/op	         1.000 db_reads/op	         0 db_scans/op	    635144 init-allocated-B	    249542 p50-ns	    347292 p95-ns	    4946 B/op	      63 allocs/op
+BenchmarkPostgresVerification/records=100000/strict/churn=true-15        	    2144	    261655 ns/op	         1.000 db_reads/op	         0 db_scans/op	    635128 init-allocated-B	    236500 p50-ns	    322500 p95-ns	    4985 B/op	      63 allocs/op
+BenchmarkPostgresVerification/records=100000/arc/churn=false-15          	  744592	       804.4 ns/op	         0 db_reads/op	         0 db_scans/op	    790256 init-allocated-B	       750.0 p50-ns	       959.0 p95-ns	     320 B/op	       8 allocs/op
+BenchmarkPostgresVerification/records=100000/arc/churn=true-15           	    2150	    266252 ns/op	         1.000 db_reads/op	         0 db_scans/op	    790256 init-allocated-B	    240292 p50-ns	    338208 p95-ns	    6006 B/op	      67 allocs/op
+BenchmarkPostgresVerification/records=100000/rcu/churn=false-15          	 1000000	       533.9 ns/op	         0 db_reads/op	         0 db_scans/op	 164933128 init-allocated-B	       417.0 p50-ns	       750.0 p95-ns	     320 B/op	       8 allocs/op
+BenchmarkPostgresVerification/records=100000/rcu/churn=true-15           	     800	    658973 ns/op	         1.000 db_reads/op	         0.002500 db_scans/op	 164933128 init-allocated-B	    504583 p50-ns	   1379625 p95-ns	  316235 B/op	    4144 allocs/op
+BenchmarkPostgresSnapshot/records=1000-15                                	     193	   2770340 ns/op	 1304141 B/op	   18049 allocs/op
+BenchmarkPostgresSnapshot/records=10000-15                               	      32	  20393454 ns/op	12796651 B/op	  180108 allocs/op
+BenchmarkPostgresSnapshot/records=100000-15                              	       3	 201286542 ns/op	126193677 B/op	 1800568 allocs/op
+PASS
+ok  	github.com/assurrussa/api	28.437s
