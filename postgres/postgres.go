@@ -59,7 +59,8 @@ func (s *Store) table(name string) string { return s.q + "." + name }
 
 // Migrate applies numbered, embedded migrations under a transaction-scoped lock.
 func (s *Store) Migrate(ctx context.Context) error {
-	tx, err := s.pool.Begin(ctx)
+	// A waiter must see migrations committed by the previous lock holder.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
@@ -156,7 +157,8 @@ func scopesSubset(requested, allowed []string) bool {
 func cloneScopes(scopes []string) []string { return append([]string{}, scopes...) }
 
 func (s *Store) transaction(ctx context.Context, f func(pgx.Tx) error) error {
-	tx, err := s.pool.Begin(ctx)
+	// Statements after a lock wait must see commits made during that wait.
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return err
 	}
