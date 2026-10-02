@@ -65,8 +65,14 @@ func (c *cache) Lookup(ctx context.Context, id string, generation uint64) (api.R
 	k := key{generation: generation, id: id}
 	// gocache TTL starts at publication. Our original read timestamp is the
 	// security deadline, so a slow load must not renew the lease.
-	if entry, found := data.Get(k); found && !c.source.Now().Before(entry.ReadAt.Add(c.source.MaxStaleness())) {
-		data.Delete(k)
+	if entry, found := data.Get(k); found {
+		if !c.source.Now().Before(entry.ReadAt.Add(c.source.MaxStaleness())) {
+			data.Delete(k)
+		} else if ctx.Err() == nil {
+			// Preserve GetOrLoad's cancellation check without repeating its
+			// backing lookup on a fresh hit. Service still fences authorization.
+			return entry, nil
+		}
 	}
 	load := func(ctx context.Context) (api.ReadResult, error) {
 		return c.source.Lookup(ctx, id)
