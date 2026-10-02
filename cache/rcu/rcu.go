@@ -68,6 +68,9 @@ func (c *cache) Start(parent context.Context) error {
 		loadCtx, stop := context.WithTimeout(ctx, c.snapshotTimeout)
 		defer stop()
 		snapshot, err := c.source.Snapshot(loadCtx)
+		if err == nil {
+			err = loadCtx.Err()
+		}
 		if err != nil {
 			c.refreshFailed()
 			c.refreshCompleted()

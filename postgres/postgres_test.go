@@ -688,7 +688,16 @@ func TestRevokeAllAndIssueSerialize(t *testing.T) {
 }
 
 func TestRevokeAllWaitsForInFlightIssueCommit(t *testing.T) {
-	s, ctx := testStore(t)
+	for _, isolation := range []string{"read committed", "repeatable read"} {
+		t.Run(isolation, func(t *testing.T) {
+			testRevokeAllWaitsForInFlightIssueCommit(t, isolation)
+		})
+	}
+}
+
+func testRevokeAllWaitsForInFlightIssueCommit(t *testing.T, isolation string) {
+	t.Helper()
+	s, ctx := testStoreAtIsolation(t, isolation, true)
 	if err := s.CreateClient(ctx, client("a", "read")); err != nil {
 		t.Fatal(err)
 	}
