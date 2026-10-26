@@ -160,7 +160,10 @@ func TestRCUFailedRefreshThrottlesSequentialRequests(t *testing.T) {
 		}
 	}
 	select {
-	case <-s.reported:
+	case err := <-s.reported:
+		if err == nil {
+			t.Fatal("refresh reported a nil error")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("refresh failure was not reported")
 	}

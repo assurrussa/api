@@ -121,7 +121,10 @@ func TestQueuedInvalidationWaitsForFailureBackoff(t *testing.T) {
 	c.Invalidate()
 	close(release)
 	select {
-	case <-s.reported:
+	case err := <-s.reported:
+		if err == nil {
+			t.Fatal("refresh reported a nil error")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("refresh error was not reported")
 	}
@@ -151,7 +154,10 @@ func TestPeriodicTickWaitsForFailureBackoff(t *testing.T) {
 	c := startSchedulerCache(t, s, 40*time.Millisecond)
 	c.Invalidate()
 	select {
-	case <-s.reported:
+	case err := <-s.reported:
+		if err == nil {
+			t.Fatal("refresh reported a nil error")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("refresh error was not reported")
 	}
@@ -249,7 +255,10 @@ func TestFailedRefreshKeepsReadAtAndFallsBackForNewGeneration(t *testing.T) {
 	s.generation.Store(1)
 	c.Invalidate()
 	select {
-	case <-s.reported:
+	case err := <-s.reported:
+		if err == nil {
+			t.Fatal("refresh reported a nil error")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("refresh error was not reported")
 	}

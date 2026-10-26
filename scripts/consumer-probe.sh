@@ -31,7 +31,7 @@ mkdir "$module_dir"
 
 export GOWORK=off
 if [ -n "$api_probe_version" ]; then
-  export GOENV=off GO111MODULE=on GOFLAGS='' GOTOOLCHAIN=go1.27.1
+  export GOENV=off GO111MODULE=on GOFLAGS='' GOTOOLCHAIN=go1.27.3
   export GOPROXY=https://proxy.golang.org GOSUMDB=sum.golang.org
   export GOPRIVATE='' GONOPROXY='' GONOSUMDB=''
   export GOMODCACHE="$probe_dir/module-cache"

@@ -6,7 +6,7 @@ Embeddable M2M access management for Go: API token issuance, rotation,
 revocation, integration bans, and permission checks. Each project has its
 own access source, PostgreSQL schema, and cache instances.
 
-Go 1.27, toolchain 1.27.1. Tested PostgreSQL version: 18.6. Module:
+Go >= 1.27.3 (security patch floor), toolchain 1.27.3. Tested PostgreSQL version: 18.6. Module:
 `github.com/assurrussa/api`. User sessions, OAuth, an administrative
 HTTP API, and a `goadmin` interface are outside the scope of the first version.
 
@@ -228,7 +228,7 @@ metadata, without secrets or hashes.
 
 ## Checks
 
-Requires the `golangci-lint` version from `.golangci-lint-version` (2.13.1).
+Requires the `golangci-lint` version from `.golangci-lint-version` (2.14.0).
 The gate and `make lint` / `make lint-fix` check for an exact version match:
 they first use `bin/golangci-lint`, then the binary from `PATH`. To install
 the pinned official binary from the repository root:
@@ -282,7 +282,7 @@ An early request made before a tag exists can leave a
 Only after availability is confirmed does the clean consumer probe start.
 Checksum, compatibility, and test failures stop immediately rather than being retried.
 
-This command uses Go 1.27.1, a separate temporary module, and a fresh dependency
+This command uses Go 1.27.3, a separate temporary module, and a fresh dependency
 cache, and disables the workspace, local Go settings, and private module overrides.
 Downloads use `proxy.golang.org` with verification through `sum.golang.org`.
 The probe checks the exact version, absence of active replacements in the consumer
@@ -359,7 +359,8 @@ load separately. This compares scenarios; it is not a production SLO or a
 sustainable load limit. Measured results and limitations:
 [benchmark report](docs/benchmarks.md).
 
-The transitive dependency `golang.org/x/text` is pinned to v0.39.0 to fix
-[GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970). Vulnerability checks must be
+The transitive dependency `golang.org/x/text` is pinned to v0.41.0 to fix
+[GO-2026-5970](https://pkg.go.dev/vuln/GO-2026-5970),
+[GO-2026-6629](https://pkg.go.dev/vuln/GO-2026-6629). Vulnerability checks must be
 repeated when dependencies change. Token expiration requires synchronized
 server clocks; the monotonic age of the local cache is unaffected by clock adjustments.
