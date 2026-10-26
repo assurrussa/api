@@ -88,7 +88,7 @@ cat > "$api_test_root/bin/go" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'go %s\n' "$*" >> "$API_TEST_STATE/calls"
-[ "$GOWORK" = off ] && [ "$GOENV" = off ] && [ "$GOTOOLCHAIN" = go1.27.1 ]
+[ "$GOWORK" = off ] && [ "$GOENV" = off ] && [ "$GOTOOLCHAIN" = go1.27.3 ]
 [ "$GOPROXY" = https://proxy.golang.org ] && [ "$GOSUMDB" = sum.golang.org ]
 [ -z "$GOFLAGS$GOPRIVATE$GONOPROXY$GONOSUMDB" ]
 [ ! -e "$GOMODCACHE" ] || [ -d "$GOMODCACHE" ]

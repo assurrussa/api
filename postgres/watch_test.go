@@ -71,7 +71,9 @@ func TestWatchBackoffBeforeSubscription(t *testing.T) {
 			}
 			previous = attemptedAt
 		}
-		<-reported
+		if err := <-reported; !errors.Is(err, hookErr) {
+			t.Fatalf("connection failure was not preserved: %v", err)
+		}
 		synctest.Wait()
 		cancel()
 		if err := <-done; err != nil {
