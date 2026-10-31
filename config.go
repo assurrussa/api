@@ -15,6 +15,8 @@ type settings struct {
 	factory      CacheFactory
 	maxStaleness time.Duration
 	now          func() time.Time
+	audit        bool
+	usage        *UsageConfig
 }
 type Option func(*settings) error
 

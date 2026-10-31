@@ -24,6 +24,10 @@ func (s *Service) CreateClient(ctx context.Context, name string, scopes []string
 		return Client{}, err
 	}
 	defer done()
+	store, err := s.adminStore(ctx)
+	if err != nil {
+		return Client{}, err
+	}
 	if !validName(name) {
 		return Client{}, fmt.Errorf("%w: client name", ErrInvalid)
 	}
@@ -32,7 +36,7 @@ func (s *Service) CreateClient(ctx context.Context, name string, scopes []string
 		return Client{}, err
 	}
 	client := Client{ID: newID(), Name: name, Scopes: grants, CreatedAt: s.settings.now().UTC()}
-	if err := s.store.CreateClient(ctx, client); err != nil {
+	if err := store.CreateClient(ctx, client); err != nil {
 		return Client{}, s.writeError(err, client.ID, "")
 	}
 	s.invalidateFor(client.ID, "")
@@ -66,11 +70,15 @@ func (s *Service) SetClientScopes(ctx context.Context, id string, scopes []strin
 		return err
 	}
 	defer done()
+	store, err := s.adminStore(ctx)
+	if err != nil {
+		return err
+	}
 	grants, err := s.scopes(scopes)
 	if err != nil {
 		return err
 	}
-	if err := s.store.SetClientScopes(ctx, id, grants); err != nil {
+	if err := store.SetClientScopes(ctx, id, grants); err != nil {
 		return s.writeError(err, id, "")
 	}
 	s.invalidateFor(id, "")
@@ -83,7 +91,11 @@ func (s *Service) SetClientBanned(ctx context.Context, id string, banned bool) e
 		return err
 	}
 	defer done()
-	if err := s.store.SetClientBanned(ctx, id, banned); err != nil {
+	store, err := s.adminStore(ctx)
+	if err != nil {
+		return err
+	}
+	if err := store.SetClientBanned(ctx, id, banned); err != nil {
 		return s.writeError(err, id, "")
 	}
 	s.invalidateFor(id, "")
@@ -96,6 +108,10 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (Issued, error) {
 		return Issued{}, err
 	}
 	defer done()
+	store, err := s.adminStore(ctx)
+	if err != nil {
+		return Issued{}, err
+	}
 	if !validName(req.Name) {
 		return Issued{}, ErrInvalid
 	}
@@ -115,10 +131,10 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (Issued, error) {
 	if err != nil {
 		return Issued{}, err
 	}
-	if timed, ok := s.store.(TimedStore); ok {
+	if timed, ok := store.(TimedStore); ok {
 		credential, version, err = timed.IssueWithLifetime(ctx, credential, version, mustTTL(s, req.TTL))
 	} else {
-		err = s.store.Issue(ctx, credential, version)
+		err = store.Issue(ctx, credential, version)
 	}
 	if err != nil {
 		return Issued{}, s.writeError(err, req.ClientID, credential.ID)
@@ -133,6 +149,10 @@ func (s *Service) Rotate(ctx context.Context, req RotateRequest) (Issued, error)
 		return Issued{}, err
 	}
 	defer done()
+	store, err := s.adminStore(ctx)
+	if err != nil {
+		return Issued{}, err
+	}
 	if req.ExpectedGeneration < 1 || req.ExpectedGeneration == math.MaxInt64 || req.GracePeriod < 0 {
 		return Issued{}, ErrInvalid
 	}
@@ -141,12 +161,12 @@ func (s *Service) Rotate(ctx context.Context, req RotateRequest) (Issued, error)
 		return Issued{}, err
 	}
 	var credential Credential
-	if timed, ok := s.store.(TimedStore); ok {
+	if timed, ok := store.(TimedStore); ok {
 		credential, version, err = timed.RotateWithLifetime(
 			ctx, req.CredentialID, req.ExpectedGeneration, version, mustTTL(s, req.TTL), req.GracePeriod,
 		)
 	} else {
-		credential, err = s.store.Rotate(ctx, req.CredentialID, req.ExpectedGeneration, version, req.GracePeriod, version.CreatedAt)
+		credential, err = store.Rotate(ctx, req.CredentialID, req.ExpectedGeneration, version, req.GracePeriod, version.CreatedAt)
 	}
 	if err != nil {
 		return Issued{}, s.writeError(err, "", req.CredentialID)
@@ -190,7 +210,11 @@ func (s *Service) Revoke(ctx context.Context, id string) error {
 		return err
 	}
 	defer done()
-	if err := s.store.Revoke(ctx, id, s.settings.now().UTC()); err != nil {
+	store, err := s.adminStore(ctx)
+	if err != nil {
+		return err
+	}
+	if err := store.Revoke(ctx, id, s.settings.now().UTC()); err != nil {
 		return s.writeError(err, "", id)
 	}
 	s.invalidateFor("", id)
@@ -203,7 +227,11 @@ func (s *Service) RevokeAll(ctx context.Context, clientID string) error {
 		return err
 	}
 	defer done()
-	if err := s.store.RevokeAll(ctx, clientID, s.settings.now().UTC()); err != nil {
+	store, err := s.adminStore(ctx)
+	if err != nil {
+		return err
+	}
+	if err := store.RevokeAll(ctx, clientID, s.settings.now().UTC()); err != nil {
 		return s.writeError(err, clientID, "")
 	}
 	s.invalidateFor(clientID, "")

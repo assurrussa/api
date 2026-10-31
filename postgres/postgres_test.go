@@ -90,7 +90,7 @@ func TestAuthorityAndIsolation(t *testing.T) {
 	if _, err = other.Lookup(ctx, v.ID); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("version leaked: %v", err)
 	}
-	if err = s.SetClientScopes(ctx, "a", []string{"read"}); err != nil {
+	if err = s.SetClientScopes(ctx, "a", []string{managedReadScope}); err != nil {
 		t.Fatal(err)
 	}
 	rot := api.SecretVersion{

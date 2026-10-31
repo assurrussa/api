@@ -130,6 +130,49 @@ PostgreSQL сохраняет историю версий секрета. Для
 после истечения, чтобы административная ротация оставалась возможной. Перед
 включением очистки определите срок хранения для аудита.
 
+## Управление, квитанции операций, аудит и использование
+
+Дополнительные возможности расширяют адаптер, не меняя прежние `Store`,
+`Client`, `Credential`, `Principal` и типы запросов. Свой адаптер реализует только
+нужные capability-интерфейсы; неподдерживаемая возможность возвращает
+`ErrUnsupported`. `CredentialDetails` читает primary и возвращает эффективные
+scopes, бан, безопасные метаданные текущей версии, число неистёкших версий и
+приблизительное последнее использование. `SecretVersions(ctx, id,
+beforeGeneration, limit)` перечисляет поколения от новых к старым (ноль начинает
+список, limit 1–1000). `RetireVersion` немедленно завершает историческую версию;
+для текущей возвращает `ErrConflict`. `AuthenticateDetails` добавляет ID версии,
+поколение и срок действия без секрета или digest.
+
+`IssueOnce` и `RotateOnce` принимают стабильный ID операции в пределах схемы.
+Квитанция и изменение фиксируются одной транзакцией. Повтор того же
+нормализованного запроса возвращает квитанцию без токена; другой запрос или
+другой actor при аудите с тем же ID получает `ErrConflict`. Квитанции не истекают
+автоматически и не удаляются очисткой версий. Они описывают зафиксированную
+операцию, а не текущее состояние доступа. После потери ответа запросите
+`Operation` либо повторите тот же запрос с тем же ID; `ErrNotFound` не доказывает
+откат. Потерянный plaintext-токен из квитанции восстановить нельзя.
+
+`WithAudit()` требует транзакционной поддержки аудита. Каждая административная
+запись требует `WithActor(ctx, Actor{Kind: "human" или "service", ID: ...})`:
+хост обязан проверить личность до добавления actor. Нельзя брать actor из
+недоверенного заголовка или бизнес-токена. Успешное изменение и безопасные
+метаданные аудита фиксируются одной транзакцией; ошибки и повторы квитанций не
+добавляют событие успеха. `AuditEvents(ctx, beforeID, limit)` идёт от новых событий
+к старым, ноль начинает список; `PruneAuditEvents` применяет заданную хостом
+политику хранения. Выполните явный миграционный шаг PostgreSQL до включения
+возможностей и включите аудит на всех административных writers: старый или
+неаудируемый writer оставляет пробелы в истории.
+
+`WithUsageTracking(UsageConfig{})` включает ограниченный best-effort сбор
+`LastUsedAt` для проверенных версий, включая отказ 403 по scopes, но исключая 401.
+По умолчанию flush выполняется примерно раз в 30 секунд, очередь ограничена
+10 000 версиями, batch — 1000, timeout flush и Close — пять секунд. Времена
+объединяются монотонно; запись использования не отправляет `NOTIFY` авторизации.
+Переполнение, сбои процесса, другие реплики и ошибки записи оставляют пропуски;
+last use не доказывает отсутствие активности. Ошибки сбора не запрещают доступ.
+Следите за `Errors()` и `UsageStats()`, сначала завершайте HTTP-запросы, затем
+проверяйте ошибку `Close()` при финальном flush.
+
 ## Строгая проверка, ARC и RCU
 
 По умолчанию каждый запрос читает согласованное состояние из PostgreSQL.
@@ -184,7 +227,15 @@ Service открывает **одну дополнительную выделе�
 HTTP принимает ровно один заголовок `Authorization: Bearer …`. Токены из URL,
 cookie или тела не поддерживаются. Ответы: 401 — недействительный доступ,
 403 — недостаточные scopes, 503 — достоверная проверка невозможна. В ответах
-нет внутренних ошибок БД или подробностей бана.
+нет внутренних ошибок БД или подробностей бана. Регистр схемы неважен; после
+Bearer допустим один или несколько ASCII-пробелов при общем лимите заголовка
+263 байта. Табуляция, дубли заголовка и пробельные символы внутри токена запрещены.
+Без credentials challenge — `Bearer realm="api"`; для переданных невалидных
+credentials добавляется `error="invalid_token"`, для 403 —
+`error="insufficient_scope"`. `MiddlewareWithOptions(service,
+httpapi.Options{ErrorHandler: httpapi.JSONErrorHandler}, scopes...)` выбирает
+безопасный JSON. Свой handler получает только `httpapi.Error{Status, Code}`;
+обязательный challenge установлен до его вызова. `Middleware` сохраняет текст.
 
 ## Рабочий пример
 
@@ -218,7 +269,20 @@ go run ./examples/access revoke-all -client CLIENT_ID
 go run ./examples/access scopes -client CLIENT_ID -scopes orders:read
 go run ./examples/access clients -limit 100
 go run ./examples/access credentials -client CLIENT_ID -limit 100
+go run ./examples/access detail -credential CREDENTIAL_ID
+go run ./examples/access versions -credential CREDENTIAL_ID -before-generation 0 -limit 100
+go run ./examples/access retire-version -credential CREDENTIAL_ID -version HISTORICAL_VERSION_ID
+go run ./examples/access issue -client CLIENT_ID -name reader -scopes orders:read -operation-id ISSUE_ID -audit -actor operator -actor-kind human
+go run ./examples/access operation -operation-id ISSUE_ID
+go run ./examples/access audit-events -before-event 0 -limit 100
+go run ./examples/access serve -usage
 ```
+
+`-operation-id` также выбирает `RotateOnce` для `rotate`; без флага issue/rotate
+сохраняют прежний формат ответа. `-audit` требует `-actor`, принимает
+`-actor-kind human|service` (по умолчанию `service`). Это доверенные параметры CLI,
+а не проверка личности. `-usage` допустим только для `serve`; новые возможности
+включаются явно.
 
 TTL-политика примера: 24 часа по умолчанию, максимум 30 дней. Это конфигурация
 примера, а не скрытые значения библиотеки. Если ответ выдачи потерян после
