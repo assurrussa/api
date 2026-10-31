@@ -74,6 +74,29 @@ import (
 
 var _ api.Store = (*postgres.Store)(nil)
 var _ api.Watcher = (*postgres.Store)(nil)
+var _ api.ManagementStore = (*postgres.Store)(nil)
+var _ api.OperationStore = (*postgres.Store)(nil)
+var _ api.AuditedStore = (*postgres.Store)(nil)
+var _ api.AuditedTimedStore = (*postgres.Store)(nil)
+var _ api.AuditedOperationStore = (*postgres.Store)(nil)
+var _ api.AuditedRetirementStore = (*postgres.Store)(nil)
+var _ api.AuditReader = (*postgres.Store)(nil)
+var _ api.UsageStore = (*postgres.Store)(nil)
+var _ http.Handler = httpapi.MiddlewareWithOptions(nil, httpapi.Options{ErrorHandler: httpapi.JSONErrorHandler}, "orders:read")(http.HandlerFunc(func(http.ResponseWriter,*http.Request){}))
+
+// Compile the additive service surface without connecting to a database.
+func managementSurface(ctx context.Context, service *api.Service) {
+	ctx = api.WithActor(ctx, api.Actor{Kind: "service", ID: "consumer"})
+	_, _ = service.CredentialDetails(ctx, "credential")
+	_, _ = service.SecretVersions(ctx, "credential", 0, 100)
+	_ = service.RetireVersion(ctx, "credential", "historical")
+	_, _ = service.IssueOnce(ctx, "issue-id", api.IssueRequest{ClientID: "client", Name: "reader"})
+	_, _ = service.RotateOnce(ctx, "rotate-id", api.RotateRequest{CredentialID: "credential", ExpectedGeneration: 1})
+	_, _ = service.Operation(ctx, "issue-id")
+	_, _ = service.AuditEvents(ctx, 0, 100)
+	_, _ = service.AuthenticateDetails(ctx, "token", "orders:read")
+	_ = service.UsageStats()
+}
 var _ http.Handler = httpapi.Middleware(nil, "orders:read")(http.HandlerFunc(func(http.ResponseWriter,*http.Request){}))
 
 func TestPublicConstruction(t *testing.T) {
@@ -90,6 +113,7 @@ func TestPublicConstruction(t *testing.T) {
 		options []api.Option
 	}{
 		{name: "strict"},
+		{name: "audit and usage", options: []api.Option{api.WithAudit(), api.WithUsageTracking(api.UsageConfig{})}},
 		{name: "arc", options: []api.Option{api.WithCache(arc.Factory(100), time.Minute)}},
 		{name: "rcu", options: []api.Option{api.WithCache(rcu.Factory(5*time.Second), time.Minute)}},
 	} {
@@ -178,7 +202,32 @@ EOF
     go mod verify
     go list -m -f '{{.Path}} {{.Version}} {{.Sum}} {{.GoModSum}}' github.com/assurrussa/api
   fi
+  # Compile legacy positional literals separately: this deliberately checks
+  # source compatibility without asking vet to approve positional API usage.
+  cat > "$probe_dir/legacy_literals.go" <<'EOF'
+package legacy
+
+import (
+    "time"
+    api "github.com/assurrussa/api"
+)
+
+var (
+    _ = api.Config{nil, time.Hour, time.Hour}
+    _ = api.Client{"client", "name", nil, false, time.Time{}}
+    _ = api.Credential{"credential", "client", "name", nil, 1, nil, time.Time{}}
+    _ = api.SecretVersion{"version", "credential", 1, [32]byte{}, time.Time{}, time.Time{}}
+    _ = api.Principal{"client", "credential", nil}
+    _ = api.Issued{api.Credential{}, "token", time.Time{}}
+    _ = api.IssueRequest{"client", "name", nil, time.Hour}
+    _ = api.RotateRequest{"credential", 1, time.Hour, 0}
+    _ = api.Record{api.Client{}, api.Credential{}, api.SecretVersion{}}
+    _ = api.ReadResult{api.Record{}, time.Time{}, 1}
+    _ = api.Snapshot{nil, time.Time{}, 1}
+)
+EOF
   go test -v ./...
+  go build "$probe_dir/legacy_literals.go"
   go build ./...
 )
 if [ -n "$api_probe_version" ]; then

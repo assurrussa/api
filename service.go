@@ -23,6 +23,7 @@ type Service struct {
 	settings         settings
 	allowed          map[string]struct{}
 	cache            Cache
+	usage            *usageTracker
 	mu               sync.RWMutex
 	generation       uint64
 	unknownChange    uint64
@@ -56,6 +57,9 @@ func New(store Store, cfg Config, options ...Option) (*Service, error) {
 			return nil, err
 		}
 	}
+	if err := validateCapabilities(store, opt); err != nil {
+		return nil, err
+	}
 	allowed := make(map[string]struct{}, len(cfg.Scopes))
 	for _, scope := range cfg.Scopes {
 		if !validScope(scope) {
@@ -76,6 +80,9 @@ func New(store Store, cfg Config, options ...Option) (*Service, error) {
 		clientChange:     make(map[string]uint64),
 		credentialChange: make(map[string]uint64),
 		lastReport:       make(map[string]time.Time),
+	}
+	if usageStore, ok := store.(UsageStore); ok && opt.usage != nil {
+		s.usage = newUsageTracker(usageStore, *opt.usage)
 	}
 	if opt.factory != nil {
 		var err error
@@ -129,6 +136,9 @@ func (s *Service) Start(ctx context.Context) error {
 	s.mu.Unlock()
 	if watcher, ok := s.store.(Watcher); ok && s.cache != nil {
 		s.startWatcher(watcher)
+	}
+	if s.usage != nil {
+		s.startUsage(s.life) //nolint:contextcheck // The worker belongs to the service lifecycle.
 	}
 	return nil
 }
@@ -199,8 +209,11 @@ func (s *Service) Close() error {
 	if s.cache != nil {
 		err = s.cache.Close()
 	}
-	s.workers.Wait()
 	s.active.Wait()
+	s.workers.Wait()
+	if s.usage != nil {
+		err = errors.Join(err, s.usage.close())
+	}
 	close(s.errors)
 	return err
 }
@@ -258,20 +271,26 @@ func (s *Service) invalidateFor(clientID, credentialID string) {
 // Authenticate verifies the secret and every requested scope. No returned slice
 // aliases the Store or cache. Errors never include the supplied token.
 func (s *Service) Authenticate(ctx context.Context, token string, required ...string) (Principal, error) {
+	details, err := s.AuthenticateDetails(ctx, token, required...)
+	return details.Principal, err
+}
+
+// AuthenticateDetails verifies access and returns safe secret-version metadata.
+func (s *Service) AuthenticateDetails(ctx context.Context, token string, required ...string) (AuthenticationDetails, error) {
 	ctx, done, err := s.begin(ctx)
 	if err != nil {
-		return Principal{}, err
+		return AuthenticationDetails{}, err
 	}
 	defer done()
 	key, digest, err := parseToken(token)
 	if err != nil {
-		return Principal{}, ErrUnauthorized
+		return AuthenticationDetails{}, ErrUnauthorized
 	}
 	s.mu.RLock()
 	started := s.started
 	s.mu.RUnlock()
 	if s.cache != nil && !started {
-		return Principal{}, fmt.Errorf("%w: cache not started", ErrUnavailable)
+		return AuthenticationDetails{}, fmt.Errorf("%w: cache not started", ErrUnavailable)
 	}
 	forceSource := false
 	for attempt := 0; attempt < 3; attempt++ {
@@ -286,23 +305,23 @@ func (s *Service) Authenticate(ctx context.Context, token string, required ...st
 		}
 		if err != nil {
 			if ctx.Err() != nil {
-				return Principal{}, ctx.Err()
+				return AuthenticationDetails{}, ctx.Err()
 			}
 			if errors.Is(err, ErrNotFound) {
-				return Principal{}, ErrUnauthorized
+				return AuthenticationDetails{}, ErrUnauthorized
 			}
-			return Principal{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
+			return AuthenticationDetails{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 		}
 		// This lock is the local decision linearization point. No external code
 		// runs here; invalidation cannot race the final successful decision.
 		s.mu.RLock()
 		if s.closed || s.life.Err() != nil {
 			s.mu.RUnlock()
-			return Principal{}, ErrClosed
+			return AuthenticationDetails{}, ErrClosed
 		}
 		if err := ctx.Err(); err != nil {
 			s.mu.RUnlock()
-			return Principal{}, err
+			return AuthenticationDetails{}, err
 		}
 		if read.Generation < s.unknownChange ||
 			read.Generation < s.clientChange[read.Record.Client.ID] ||
@@ -319,9 +338,25 @@ func (s *Service) Authenticate(ctx context.Context, token string, required ...st
 		}
 		principal, checkErr := validate(read.Record, key, digest, now, required)
 		s.mu.RUnlock()
-		return principal, checkErr
+		return s.authenticationResult(read.Record, key, principal, checkErr, now)
 	}
-	return Principal{}, fmt.Errorf("%w: verification changed or exceeded freshness budget", ErrUnavailable)
+	return AuthenticationDetails{}, fmt.Errorf("%w: verification changed or exceeded freshness budget", ErrUnavailable)
+}
+
+func (s *Service) authenticationResult(
+	record Record, key string, principal Principal, err error, now time.Time,
+) (AuthenticationDetails, error) {
+	if s.usage != nil && (err == nil || errors.Is(err, ErrForbidden)) {
+		s.usage.observe(UsageObservation{
+			ClientID: record.Client.ID, CredentialID: record.Credential.ID, VersionID: key, At: now.UTC(),
+		})
+	}
+	if err != nil {
+		return AuthenticationDetails{}, err
+	}
+	return AuthenticationDetails{
+		Principal: principal, SecretVersionID: key, Generation: record.Secret.Generation, ExpiresAt: record.Secret.ExpiresAt,
+	}, nil
 }
 
 func validate(r Record, key string, digest [32]byte, now time.Time, required []string) (Principal, error) {

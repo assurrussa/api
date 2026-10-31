@@ -13,8 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/assurrussa/api"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/assurrussa/api"
 )
 
 func TestEndToEnd(t *testing.T) {
@@ -49,6 +50,11 @@ func TestEndToEnd(t *testing.T) {
 					}
 				}
 				s := servers[0]
+				if status, _ := s.request(t, "", func(r *http.Request) {
+					r.Header.Set("Authorization", "Bearer  "+issued.Token)
+				}); status != http.StatusOK {
+					t.Fatalf("multiple Bearer spaces returned %d", status)
+				}
 				s.expect(t, "", http.StatusUnauthorized)
 				s.expect(t, "malformed", http.StatusUnauthorized)
 				wrongSecret := issued.Token[:38] + "A" + issued.Token[39:]
@@ -62,7 +68,7 @@ func TestEndToEnd(t *testing.T) {
 						r.Header.Add("Authorization", "Bearer "+issued.Token)
 						r.Header.Add("Authorization", "Bearer "+issued.Token)
 					},
-					func(r *http.Request) { r.Header.Set("Authorization", "Bearer  "+issued.Token) },
+					func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+issued.Token+" extra") },
 					func(r *http.Request) {
 						r.Header.Set("Authorization", "Bearer "+strings.Repeat(" ", (1<<20)-2048)+"invalid")
 					},

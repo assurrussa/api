@@ -38,6 +38,9 @@ type Store struct {
 	schema  string
 	q       string
 	channel string
+	// tx is set only on a private transaction-bound copy used to compose
+	// optional mutations atomically. Published Store instances never set it.
+	tx pgx.Tx
 }
 
 var (
@@ -157,6 +160,13 @@ func scopesSubset(requested, allowed []string) bool {
 func cloneScopes(scopes []string) []string { return append([]string{}, scopes...) }
 
 func (s *Store) transaction(ctx context.Context, f func(pgx.Tx) error) error {
+	if s.tx != nil {
+		return dbError(f(s.tx))
+	}
+	return s.atomic(ctx, true, f)
+}
+
+func (s *Store) atomic(ctx context.Context, notify bool, f func(pgx.Tx) error) error {
 	// Statements after a lock wait must see commits made during that wait.
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
@@ -167,8 +177,10 @@ func (s *Store) transaction(ctx context.Context, f func(pgx.Tx) error) error {
 	if err = f(tx); err != nil {
 		return dbError(err)
 	}
-	if _, err = tx.Exec(ctx, `SELECT pg_notify($1, 'changed')`, s.channel); err != nil {
-		return err
+	if notify {
+		if _, err = tx.Exec(ctx, `SELECT pg_notify($1, 'changed')`, s.channel); err != nil {
+			return err
+		}
 	}
 	return dbError(tx.Commit(ctx))
 }

@@ -26,6 +26,9 @@ import (
 )
 
 type flags struct {
+	operationID, version, actor, actorKind  string
+	beforeGeneration, beforeEvent           int64
+	audit, usage                            bool
 	client, credential, name, scopes, after string
 	cache, addr                             string
 	ttl, grace, maxStaleness, refresh       time.Duration
@@ -41,9 +44,9 @@ func main() {
 	}
 }
 
-func run(args []string) error {
+func run(args []string) (resultErr error) {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: access <migrate|create-client|clients|issue|credentials|rotate|revoke|revoke-all|ban|unban|scopes|serve> [flags]")
+		return fmt.Errorf("usage: access <migrate|create-client|clients|issue|credentials|rotate|revoke|revoke-all|ban|unban|scopes|detail|versions|retire-version|operation|audit-events|serve> [flags]")
 	}
 	command := args[0]
 	if !knownCommand(command) {
@@ -52,6 +55,14 @@ func run(args []string) error {
 	var f flags
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.StringVar(&f.operationID, "operation-id", "", "stable operation ID for issue, rotate, or operation lookup")
+	fs.StringVar(&f.version, "version", "", "historical secret version ID")
+	fs.Int64Var(&f.beforeGeneration, "before-generation", 0, "exclusive generation cursor (zero starts newest)")
+	fs.Int64Var(&f.beforeEvent, "before-event", 0, "exclusive audit event cursor (zero starts newest)")
+	fs.BoolVar(&f.audit, "audit", false, "require transactional audit with a trusted actor")
+	fs.StringVar(&f.actor, "actor", "", "host-verified actor ID (required with -audit)")
+	fs.StringVar(&f.actorKind, "actor-kind", "service", "trusted actor kind: human or service")
+	fs.BoolVar(&f.usage, "usage", false, "enable best-effort last-used tracking for serve")
 	fs.StringVar(&f.client, "client", "", "client ID")
 	fs.StringVar(&f.credential, "credential", "", "credential ID")
 	fs.StringVar(&f.name, "name", "", "client or credential name")
@@ -73,6 +84,12 @@ func run(args []string) error {
 	if fs.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments")
 	}
+	if f.usage && command != "serve" {
+		return fmt.Errorf("-usage is only supported by serve")
+	}
+	if f.audit && !(api.Actor{Kind: f.actorKind, ID: f.actor}).Valid() {
+		return fmt.Errorf("-audit requires -actor and -actor-kind human or service")
+	}
 	url, schema := os.Getenv("API_DATABASE_URL"), os.Getenv("API_SCHEMA")
 	if url == "" || schema == "" {
 		return fmt.Errorf("API_DATABASE_URL and API_SCHEMA are required")
@@ -84,6 +101,11 @@ func run(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if f.audit {
+		// Trusted CLI configuration only. HTTP hosts must verify actor identity
+		// before calling WithActor; business tokens cannot supply an actor.
+		ctx = api.WithActor(ctx, api.Actor{Kind: f.actorKind, ID: f.actor})
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		return fmt.Errorf("cannot initialize database pool")
@@ -103,6 +125,12 @@ func run(args []string) error {
 	// Example-only policy. Real hosts own their scope catalog and TTL limits.
 	cfg := api.Config{Scopes: []string{"orders:read", "orders:write"}, DefaultTTL: 24 * time.Hour, MaxTTL: 30 * 24 * time.Hour}
 	var options []api.Option
+	if f.audit {
+		options = append(options, api.WithAudit())
+	}
+	if f.usage {
+		options = append(options, api.WithUsageTracking(api.UsageConfig{}))
+	}
 	switch f.cache {
 	case "strict":
 	case "arc":
@@ -120,7 +148,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer service.Close()
+	defer func() { resultErr = errors.Join(resultErr, service.Close()) }()
 	if command == "serve" {
 		return startAndServe(ctx, service, func() error { return execute(ctx, command, f, service) })
 	}
@@ -149,7 +177,7 @@ func startAndServe(signalCtx context.Context, service *api.Service, serve func()
 
 func knownCommand(command string) bool {
 	switch command {
-	case "migrate", "create-client", "clients", "issue", "credentials", "rotate", "revoke", "revoke-all", "ban", "unban", "scopes", "serve":
+	case "migrate", "create-client", "clients", "issue", "credentials", "rotate", "revoke", "revoke-all", "ban", "unban", "scopes", "detail", "versions", "retire-version", "operation", "audit-events", "serve":
 		return true
 	default:
 		return false
@@ -198,7 +226,15 @@ func execute(ctx context.Context, command string, f flags, s *api.Service) error
 		if err := required("name", f.name); err != nil {
 			return err
 		}
-		v, err := s.Issue(ctx, api.IssueRequest{ClientID: f.client, Name: f.name, Scopes: splitScopes(f.scopes), TTL: f.ttl})
+		request := api.IssueRequest{ClientID: f.client, Name: f.name, Scopes: splitScopes(f.scopes), TTL: f.ttl}
+		if f.operationID != "" {
+			v, err := s.IssueOnce(ctx, f.operationID, request)
+			if err != nil {
+				return err
+			}
+			return output(v)
+		}
+		v, err := s.Issue(ctx, request)
 		if err != nil {
 			return err
 		}
@@ -219,7 +255,59 @@ func execute(ctx context.Context, command string, f flags, s *api.Service) error
 		if f.generation <= 0 {
 			return fmt.Errorf("-generation must be positive")
 		}
-		v, err := s.Rotate(ctx, api.RotateRequest{CredentialID: f.credential, ExpectedGeneration: f.generation, TTL: f.ttl, GracePeriod: f.grace})
+		request := api.RotateRequest{CredentialID: f.credential, ExpectedGeneration: f.generation, TTL: f.ttl, GracePeriod: f.grace}
+		if f.operationID != "" {
+			v, err := s.RotateOnce(ctx, f.operationID, request)
+			if err != nil {
+				return err
+			}
+			return output(v)
+		}
+		v, err := s.Rotate(ctx, request)
+		if err != nil {
+			return err
+		}
+		return output(v)
+	case "detail":
+		if err := required("credential", f.credential); err != nil {
+			return err
+		}
+		v, err := s.CredentialDetails(ctx, f.credential)
+		if err != nil {
+			return err
+		}
+		return output(v)
+	case "versions":
+		if err := required("credential", f.credential); err != nil {
+			return err
+		}
+		v, err := s.SecretVersions(ctx, f.credential, f.beforeGeneration, f.limit)
+		if err != nil {
+			return err
+		}
+		return output(v)
+	case "retire-version":
+		if err := required("credential", f.credential); err != nil {
+			return err
+		}
+		if err := required("version", f.version); err != nil {
+			return err
+		}
+		if err := s.RetireVersion(ctx, f.credential, f.version); err != nil {
+			return err
+		}
+		return output(map[string]bool{"retired": true})
+	case "operation":
+		if err := required("operation-id", f.operationID); err != nil {
+			return err
+		}
+		v, err := s.Operation(ctx, f.operationID)
+		if err != nil {
+			return err
+		}
+		return output(v)
+	case "audit-events":
+		v, err := s.AuditEvents(ctx, f.beforeEvent, f.limit)
 		if err != nil {
 			return err
 		}

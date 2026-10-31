@@ -130,6 +130,49 @@ historical versions; it preserves the current Credential version even after
 expiration so that administrative rotation remains possible. Define the audit
 retention period before enabling cleanup.
 
+## Management, receipts, audit, and usage
+
+Optional capabilities extend `Store` without changing the existing `Store`,
+`Client`, `Credential`, `Principal`, or request types. Custom adapters implement
+only the capabilities they support; unsupported features return `ErrUnsupported`.
+`CredentialDetails` reads current state from the primary, including effective
+scopes, ban status, safe current-version metadata, unexpired-version count, and
+approximate last use. `SecretVersions(ctx, id, beforeGeneration, limit)` returns
+newest generations first (zero starts the list, limit 1–1000). `RetireVersion`
+expires a historical version immediately; retiring the current version returns
+`ErrConflict`. `AuthenticateDetails` adds verified version ID, generation, and
+expiry without exposing a secret or digest.
+
+`IssueOnce` and `RotateOnce` accept a stable operation ID scoped to the schema.
+The receipt and mutation commit atomically. Repeating the same normalized request
+returns the receipt without a token; a different request or audited actor with
+the same ID returns `ErrConflict`. Receipts do not expire automatically and are
+not deleted by secret-version pruning. They describe the committed operation,
+not current credential state. After a lost response, query `Operation` or retry
+with the same ID and request; `ErrNotFound` is not proof of rollback. A lost
+plaintext token cannot be recovered from a receipt.
+
+`WithAudit()` requires transactional audit support. Every administrative write
+requires `WithActor(ctx, Actor{Kind: "human" or "service", ID: ...})`; the host
+must verify that identity before attaching it. Never derive the actor from an
+untrusted header or business token. Successful changes and their safe audit
+metadata commit in the same transaction; failures and receipt replays add no
+success event. `AuditEvents(ctx, beforeID, limit)` lists newest first, with zero
+starting the list; `PruneAuditEvents` applies the host's explicit retention policy.
+Run the explicit PostgreSQL migration step before enabling these features, and
+configure every administrative writer to audit: an older or unaudited writer
+cannot provide complete audit coverage.
+
+`WithUsageTracking(UsageConfig{})` enables bounded best-effort `LastUsedAt`
+collection for authenticated versions, including 403 scope failures, excluding
+401 failures. Defaults are an approximately 30-second flush interval, 10,000
+pending versions, batches of 1,000, and five-second flush/close timeouts. Times
+merge monotonically; usage writes do not send authorization `NOTIFY` events.
+Drops, crashes, other replicas, and persistence failures can leave observations
+missing, so last use cannot prove inactivity. Usage failures do not deny access;
+monitor `Errors()` and `UsageStats()`, drain HTTP first, then check the error from
+`Close()` for the final flush.
+
 ## Strict verification, ARC, and RCU
 
 By default, every request reads consistent state from PostgreSQL.
@@ -184,7 +227,15 @@ is not a rate limiter.
 HTTP accepts exactly one `Authorization: Bearer …` header. Tokens from URLs,
 cookies, or request bodies are not supported. Responses: 401 for invalid access,
 403 for insufficient scopes, and 503 when reliable verification is impossible.
-Responses do not expose internal database errors or ban details.
+Responses do not expose internal database errors or ban details. The scheme is
+case insensitive and accepts one or more ASCII spaces before the token, within
+a total header limit of 263 bytes; tabs, duplicate headers, and token whitespace
+are rejected. Missing credentials receive `Bearer realm="api"`; invalid supplied
+credentials add `error="invalid_token"`, and 403 adds `error="insufficient_scope"`.
+`MiddlewareWithOptions(service, httpapi.Options{ErrorHandler:
+httpapi.JSONErrorHandler}, scopes...)` selects safe JSON error bodies. Custom
+handlers receive only `httpapi.Error{Status, Code}`; the middleware sets the
+mandatory challenge before invoking the handler. `Middleware` keeps text bodies.
 
 ## Working example
 
@@ -218,7 +269,19 @@ go run ./examples/access revoke-all -client CLIENT_ID
 go run ./examples/access scopes -client CLIENT_ID -scopes orders:read
 go run ./examples/access clients -limit 100
 go run ./examples/access credentials -client CLIENT_ID -limit 100
+go run ./examples/access detail -credential CREDENTIAL_ID
+go run ./examples/access versions -credential CREDENTIAL_ID -before-generation 0 -limit 100
+go run ./examples/access retire-version -credential CREDENTIAL_ID -version HISTORICAL_VERSION_ID
+go run ./examples/access issue -client CLIENT_ID -name reader -scopes orders:read -operation-id ISSUE_ID -audit -actor operator -actor-kind human
+go run ./examples/access operation -operation-id ISSUE_ID
+go run ./examples/access audit-events -before-event 0 -limit 100
+go run ./examples/access serve -usage
 ```
+
+`-operation-id` also selects `RotateOnce` for `rotate`; without it, issue/rotate
+retain their original output. `-audit` requires `-actor` and accepts
+`-actor-kind human|service` (default `service`). These are trusted CLI inputs,
+not authentication. `-usage` is accepted only by `serve`; all features are opt-in.
 
 The example's TTL policy is 24 hours by default, with a maximum of 30 days.
 This is example configuration, not hidden library defaults. If the issuance
