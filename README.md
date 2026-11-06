@@ -15,7 +15,7 @@ HTTP API, and a `goadmin` interface are outside the scope of the first version.
 Specify an exact published version:
 
 ```sh
-go get github.com/assurrussa/api@v0.1.0
+go get github.com/assurrussa/api@v0.2.0
 ```
 
 License: [MIT](LICENSE). Supported import paths: the root package
