@@ -272,7 +272,7 @@ func (s *Store) Issue(ctx context.Context, c api.Credential, v api.SecretVersion
 func (s *Store) IssueWithLifetime(
 	ctx context.Context, c api.Credential, v api.SecretVersion, ttl time.Duration,
 ) (api.Credential, api.SecretVersion, error) {
-	if ttl <= 0 {
+	if ttl < 0 || (ttl == 0 && !v.NonExpiring) || (ttl > 0 && v.NonExpiring) {
 		return api.Credential{}, api.SecretVersion{}, invalid("positive lifetime required")
 	}
 	return s.issue(ctx, c, v, ttl)
@@ -282,7 +282,7 @@ func (s *Store) issue(
 	ctx context.Context, c api.Credential, v api.SecretVersion, ttl time.Duration,
 ) (api.Credential, api.SecretVersion, error) {
 	if c.ID == "" || c.ClientID == "" || v.ID == "" || v.CredentialID != c.ID ||
-		c.Generation != 1 || v.Generation != 1 || c.RevokedAt != nil || v.ExpiresAt.IsZero() {
+		c.Generation != 1 || v.Generation != 1 || c.RevokedAt != nil || (v.NonExpiring != v.ExpiresAt.IsZero()) {
 		return api.Credential{}, api.SecretVersion{}, invalid("invalid initial credential or secret version")
 	}
 	err := s.transaction(ctx, func(tx pgx.Tx) error {
@@ -296,11 +296,13 @@ func (s *Store) issue(
 		if !scopesSubset(c.Scopes, client.Scopes) {
 			return forbidden("credential scopes exceed client scopes")
 		}
-		if ttl > 0 {
+		if ttl > 0 || v.NonExpiring {
 			at := time.Now().UTC()
 			c.CreatedAt = at
 			v.CreatedAt = at
-			v.ExpiresAt = at.Add(ttl)
+			if !v.NonExpiring {
+				v.ExpiresAt = at.Add(ttl)
+			}
 		}
 		queryCred := `INSERT INTO ` + s.table("credentials") +
 			`(id,client_id,name,scopes,generation,revoked_at,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)`
@@ -310,7 +312,7 @@ func (s *Store) issue(
 		}
 		querySec := `INSERT INTO ` + s.table("secret_versions") +
 			`(id,credential_id,generation,digest,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`
-		_, err = tx.Exec(ctx, querySec, v.ID, v.CredentialID, v.Generation, v.Digest[:], v.ExpiresAt, v.CreatedAt)
+		_, err = tx.Exec(ctx, querySec, v.ID, v.CredentialID, v.Generation, v.Digest[:], nullableExpiry(v), v.CreatedAt)
 		return err
 	})
 	if err != nil {
@@ -369,7 +371,7 @@ func (s *Store) Rotate(
 func (s *Store) RotateWithLifetime(
 	ctx context.Context, id string, expected int64, v api.SecretVersion, ttl, grace time.Duration,
 ) (api.Credential, api.SecretVersion, error) {
-	if ttl <= 0 {
+	if ttl < 0 || (ttl == 0 && !v.NonExpiring) || (ttl > 0 && v.NonExpiring) {
 		return api.Credential{}, api.SecretVersion{}, invalid("positive lifetime required")
 	}
 	return s.rotate(ctx, id, expected, v, ttl, grace, v.CreatedAt)
@@ -379,7 +381,7 @@ func (s *Store) rotate(
 	ctx context.Context, id string, expected int64, v api.SecretVersion, ttl, grace time.Duration, at time.Time,
 ) (api.Credential, api.SecretVersion, error) {
 	if id == "" || v.ID == "" || v.CredentialID != id || expected < 1 ||
-		v.Generation != expected+1 || grace < 0 || v.ExpiresAt.IsZero() || at.IsZero() {
+		v.Generation != expected+1 || grace < 0 || (v.NonExpiring != v.ExpiresAt.IsZero()) || at.IsZero() {
 		return api.Credential{}, api.SecretVersion{}, invalid("invalid rotation")
 	}
 	var result api.Credential
@@ -397,10 +399,12 @@ func (s *Store) rotate(
 		if c.Generation != expected {
 			return conflict("generation changed")
 		}
-		if ttl > 0 {
+		if ttl > 0 || v.NonExpiring {
 			at = time.Now().UTC()
 			v.CreatedAt = at
-			v.ExpiresAt = at.Add(ttl)
+			if !v.NonExpiring {
+				v.ExpiresAt = at.Add(ttl)
+			}
 		}
 		deadline := at.Add(grace)
 		queryExpire := `UPDATE ` + s.table("secret_versions") +
@@ -414,7 +418,7 @@ func (s *Store) rotate(
 		}
 		queryInsertSec := `INSERT INTO ` + s.table("secret_versions") +
 			`(id,credential_id,generation,digest,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6)`
-		_, err = tx.Exec(ctx, queryInsertSec, v.ID, id, v.Generation, v.Digest[:], v.ExpiresAt, v.CreatedAt)
+		_, err = tx.Exec(ctx, queryInsertSec, v.ID, id, v.Generation, v.Digest[:], nullableExpiry(v), v.CreatedAt)
 		if err != nil {
 			return err
 		}
@@ -470,18 +474,23 @@ const recordColumns = `c.id,c.name,c.scopes,c.banned,c.created_at,` +
 func scanRecord(row interface{ Scan(dest ...any) error }) (api.Record, error) {
 	var r api.Record
 	var digest []byte
+	var expiresAt *time.Time
 	err := row.Scan(
 		&r.Client.ID, &r.Client.Name, &r.Client.Scopes, &r.Client.Banned, &r.Client.CreatedAt,
 		&r.Credential.ID, &r.Credential.ClientID, &r.Credential.Name, &r.Credential.Scopes,
 		&r.Credential.Generation, &r.Credential.RevokedAt, &r.Credential.CreatedAt,
 		&r.Secret.ID, &r.Secret.CredentialID, &r.Secret.Generation, &digest,
-		&r.Secret.ExpiresAt, &r.Secret.CreatedAt,
+		&expiresAt, &r.Secret.CreatedAt,
 	)
 	if err != nil {
 		return api.Record{}, dbError(err)
 	}
 	if len(digest) != 32 {
 		return api.Record{}, fmt.Errorf("invalid stored digest length %d", len(digest))
+	}
+	r.Secret.NonExpiring = expiresAt == nil
+	if expiresAt != nil {
+		r.Secret.ExpiresAt = *expiresAt
 	}
 	copy(r.Secret.Digest[:], digest)
 	return r, nil
@@ -501,7 +510,7 @@ func (s *Store) Lookup(ctx context.Context, id string) (api.Record, error) {
 }
 
 func (s *Store) Snapshot(ctx context.Context) (map[string]api.Record, error) {
-	rows, err := s.pool.Query(ctx, s.joined()+` WHERE k.revoked_at IS NULL AND v.expires_at>now()`)
+	rows, err := s.pool.Query(ctx, s.joined()+` WHERE k.revoked_at IS NULL AND (v.expires_at IS NULL OR v.expires_at>now())`)
 	if err != nil {
 		return nil, err
 	}
@@ -537,4 +546,14 @@ func (s *Store) PruneExpiredVersions(ctx context.Context, before time.Time, limi
 		DELETE FROM `+s.table("secret_versions")+` v USING candidates c WHERE v.id=c.id RETURNING v.id
 	) SELECT count(*) FROM deleted`, before, limit).Scan(&removed)
 	return removed, err
+}
+
+// SupportsNonExpiring advertises nullable permanent-secret storage.
+func (*Store) SupportsNonExpiring() bool { return true }
+
+func nullableExpiry(v api.SecretVersion) any {
+	if v.NonExpiring {
+		return nil
+	}
+	return v.ExpiresAt
 }

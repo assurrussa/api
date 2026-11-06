@@ -28,6 +28,7 @@ func (a Actor) Valid() bool { return (a.Kind == "human" || a.Kind == "service") 
 
 // SecretVersionInfo contains safe administrative metadata only.
 type SecretVersionInfo struct {
+	NonExpiring  bool       `json:"non_expiring"`
 	ID           string     `json:"id"`
 	CredentialID string     `json:"credential_id"`
 	Generation   int64      `json:"generation"`
@@ -44,6 +45,7 @@ type CredentialDetails struct {
 	LastUsedAt        *time.Time        `json:"last_used_at,omitempty"`
 }
 type AuthenticationDetails struct {
+	NonExpiring     bool      `json:"non_expiring"`
 	Principal       Principal `json:"principal"`
 	SecretVersionID string    `json:"secret_version_id"`
 	Generation      int64     `json:"generation"`

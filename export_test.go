@@ -30,7 +30,7 @@ func (s *Service) InvalidateFor(clientID, credentialID string) {
 
 // Secret issues a secret version directly for policy testing.
 func (s *Service) Secret(clientID string, generation int64, ttl time.Duration) (SecretVersion, string, error) {
-	return s.secret(clientID, generation, ttl)
+	return s.secret(clientID, generation, ttl, false)
 }
 
 // TrackedChangesCount returns the count of tracked changes and unknown change counter.

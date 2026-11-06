@@ -52,12 +52,13 @@ func (s *Store) appendAudit(ctx context.Context, tx pgx.Tx, event api.AuditEvent
 		details["scopes"] = scopes
 	}
 	if event.VersionID != "" {
-		var expiresAt time.Time
+		var expiresAt *time.Time
 		query := `SELECT expires_at FROM ` + s.table("secret_versions") + ` WHERE id=$1`
 		if err := tx.QueryRow(ctx, query, event.VersionID).Scan(&expiresAt); err != nil {
 			return err
 		}
 		details["expires_at"] = expiresAt
+		details["non_expiring"] = expiresAt == nil
 	}
 	body, err := json.Marshal(details)
 	if err != nil {

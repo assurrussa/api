@@ -20,18 +20,24 @@ var (
 // statement, so concurrent rotations cannot mix generations in the result.
 func (s *Store) CredentialDetails(ctx context.Context, id string) (api.CredentialDetails, error) {
 	var d api.CredentialDetails
+	var expiresAt *time.Time
 	var clientScopes []string
 	query := `SELECT k.id,k.client_id,k.name,k.scopes,k.generation,k.revoked_at,k.created_at,
  c.banned,c.scopes,k.last_used_at,v.id,v.credential_id,v.generation,v.created_at,v.expires_at,v.last_used_at,
- (SELECT count(*) FROM ` + s.table("secret_versions") + ` h WHERE h.credential_id=k.id AND h.expires_at>statement_timestamp())
+ (SELECT count(*) FROM ` + s.table("secret_versions") + ` h WHERE h.credential_id=k.id
+ AND (h.expires_at IS NULL OR h.expires_at>statement_timestamp()))
  FROM ` + s.table("credentials") + ` k JOIN ` + s.table("clients") + ` c ON c.id=k.client_id
  JOIN ` + s.table("secret_versions") + ` v ON v.credential_id=k.id AND v.generation=k.generation WHERE k.id=$1`
 	err := s.pool.QueryRow(ctx, query, id).Scan(&d.Credential.ID, &d.Credential.ClientID, &d.Credential.Name, &d.Credential.Scopes,
 		&d.Credential.Generation, &d.Credential.RevokedAt, &d.Credential.CreatedAt, &d.ClientBanned, &clientScopes, &d.LastUsedAt,
 		&d.CurrentVersion.ID, &d.CurrentVersion.CredentialID, &d.CurrentVersion.Generation,
-		&d.CurrentVersion.CreatedAt, &d.CurrentVersion.ExpiresAt, &d.CurrentVersion.LastUsedAt, &d.UnexpiredVersions)
+		&d.CurrentVersion.CreatedAt, &expiresAt, &d.CurrentVersion.LastUsedAt, &d.UnexpiredVersions)
 	if err != nil {
 		return api.CredentialDetails{}, dbError(err)
+	}
+	d.CurrentVersion.NonExpiring = expiresAt == nil
+	if expiresAt != nil {
+		d.CurrentVersion.ExpiresAt = *expiresAt
 	}
 	d.EffectiveScopes = make([]string, 0, len(d.Credential.Scopes))
 	allowed := make(map[string]bool, len(clientScopes))
@@ -61,8 +67,13 @@ func (s *Store) SecretVersions(ctx context.Context, id string, before int64, lim
 	out := make([]api.SecretVersionInfo, 0)
 	for rows.Next() {
 		var v api.SecretVersionInfo
-		if err = rows.Scan(&v.ID, &v.CredentialID, &v.Generation, &v.CreatedAt, &v.ExpiresAt, &v.LastUsedAt); err != nil {
+		var expiresAt *time.Time
+		if err = rows.Scan(&v.ID, &v.CredentialID, &v.Generation, &v.CreatedAt, &expiresAt, &v.LastUsedAt); err != nil {
 			return nil, err
+		}
+		v.NonExpiring = expiresAt == nil
+		if expiresAt != nil {
+			v.ExpiresAt = *expiresAt
 		}
 		out = append(out, v)
 	}
