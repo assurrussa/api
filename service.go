@@ -355,14 +355,16 @@ func (s *Service) authenticationResult(
 		return AuthenticationDetails{}, err
 	}
 	return AuthenticationDetails{
-		Principal: principal, SecretVersionID: key, Generation: record.Secret.Generation, ExpiresAt: record.Secret.ExpiresAt,
+		Principal: principal, SecretVersionID: key, Generation: record.Secret.Generation,
+		ExpiresAt: record.Secret.ExpiresAt, NonExpiring: record.Secret.NonExpiring,
 	}, nil
 }
 
 func validate(r Record, key string, digest [32]byte, now time.Time, required []string) (Principal, error) {
 	if r.Secret.ID != key || r.Secret.CredentialID != r.Credential.ID || r.Credential.ClientID != r.Client.ID ||
 		subtle.ConstantTimeCompare(r.Secret.Digest[:], digest[:]) != 1 || r.Client.Banned || r.Credential.RevokedAt != nil ||
-		r.Secret.ExpiresAt.IsZero() || !now.Before(r.Secret.ExpiresAt) {
+		(r.Secret.NonExpiring && !r.Secret.ExpiresAt.IsZero()) ||
+		(!r.Secret.NonExpiring && (r.Secret.ExpiresAt.IsZero() || !now.Before(r.Secret.ExpiresAt))) {
 		return Principal{}, ErrUnauthorized
 	}
 	scopes := make([]string, 0, len(r.Credential.Scopes))
@@ -451,8 +453,16 @@ func (s *Service) scopes(input []string) ([]string, error) {
 func newID() string              { var b [16]byte; _, _ = rand.Read(b[:]); return hex.EncodeToString(b[:]) }
 func validName(name string) bool { return strings.TrimSpace(name) != "" && len(name) <= 256 }
 
-func (s *Service) secret(credential string, generation int64, ttl time.Duration) (SecretVersion, string, error) {
-	ttl, err := s.effectiveTTL(ttl)
+func (s *Service) secret(
+	credential string, generation int64, ttl time.Duration, nonExpiring bool,
+) (SecretVersion, string, error) {
+	if nonExpiring && (!s.settings.nonExpiring || ttl != 0) {
+		return SecretVersion{}, "", fmt.Errorf("%w: non-expiring issuance requires opt-in and zero TTL", ErrInvalid)
+	}
+	var err error
+	if !nonExpiring {
+		ttl, err = s.effectiveTTL(ttl)
+	}
 	if err != nil {
 		return SecretVersion{}, "", fmt.Errorf("%w: token TTL", ErrInvalid)
 	}
@@ -466,6 +476,10 @@ func (s *Service) secret(credential string, generation int64, ttl time.Duration)
 		Digest:       sha256.Sum256(raw[:]),
 		CreatedAt:    at,
 		ExpiresAt:    at.Add(ttl),
+	}
+	if nonExpiring {
+		version.NonExpiring = true
+		version.ExpiresAt = time.Time{}
 	}
 	return version, "api1_" + version.ID + "." + base64.RawURLEncoding.EncodeToString(raw[:]), nil
 }

@@ -12,6 +12,7 @@ type Config struct {
 }
 
 type settings struct {
+	nonExpiring  bool
 	factory      CacheFactory
 	maxStaleness time.Duration
 	now          func() time.Time
@@ -30,4 +31,10 @@ func WithCache(factory CacheFactory, maxStaleness time.Duration) Option {
 		s.factory, s.maxStaleness = factory, maxStaleness
 		return nil
 	}
+}
+
+// WithNonExpiring permits explicit permanent issuance. Finite defaults remain unchanged.
+// Existing permanent credentials authenticate without this option.
+func WithNonExpiring() Option {
+	return func(s *settings) error { s.nonExpiring = true; return nil }
 }

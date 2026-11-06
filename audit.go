@@ -10,6 +10,12 @@ import (
 func WithAudit() Option { return func(s *settings) error { s.audit = true; return nil } }
 
 func validateCapabilities(store Store, opt settings) error {
+	if opt.nonExpiring {
+		capability, ok := store.(NonExpiringStore)
+		if !ok || !capability.SupportsNonExpiring() {
+			return fmt.Errorf("%w: non-expiring credentials", ErrUnsupported)
+		}
+	}
 	if opt.audit {
 		if _, ok := store.(AuditedStore); !ok {
 			return fmt.Errorf("%w: transactional audit", ErrUnsupported)

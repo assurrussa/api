@@ -101,7 +101,10 @@ func validOperationID(id string) bool {
 	return true
 }
 
-func operationSpec(id, kind string, request any, actor Actor) (OperationSpec, error) {
+func operationSpec(id, kind string, request map[string]any, actor Actor, nonExpiring bool) (OperationSpec, error) {
+	if nonExpiring {
+		request["non_expiring"] = true
+	}
 	if !validOperationID(id) {
 		return OperationSpec{}, ErrInvalid
 	}
@@ -158,7 +161,7 @@ func (s *Service) IssueOnce(ctx context.Context, id string, req IssueRequest) (O
 	}
 	spec, err := operationSpec(id, "issue", map[string]any{
 		"client_id": req.ClientID, "name": req.Name, "scopes": req.Scopes, "ttl": req.TTL,
-	}, actor)
+	}, actor, req.NonExpiring)
 	if err != nil {
 		return OperationResult{}, err
 	}
@@ -175,16 +178,16 @@ func (s *Service) IssueOnce(ctx context.Context, id string, req IssueRequest) (O
 	cred := Credential{
 		ID: newID(), ClientID: req.ClientID, Name: req.Name, Scopes: scopes, Generation: 1, CreatedAt: s.settings.now().UTC(),
 	}
-	version, token, err := s.secret(cred.ID, 1, req.TTL)
+	version, token, err := s.secret(cred.ID, 1, req.TTL, req.NonExpiring)
 	if err != nil {
 		return OperationResult{}, err
 	}
 	var receipt OperationReceipt
 	var applied bool
 	if s.settings.audit {
-		receipt, applied, err = audited.IssueOnceAudited(ctx, actor, spec, cred, version, mustTTL(s, req.TTL))
+		receipt, applied, err = audited.IssueOnceAudited(ctx, actor, spec, cred, version, mustTTL(s, req.TTL, req.NonExpiring))
 	} else {
-		receipt, applied, err = store.IssueOnce(ctx, spec, cred, version, mustTTL(s, req.TTL))
+		receipt, applied, err = store.IssueOnce(ctx, spec, cred, version, mustTTL(s, req.TTL, req.NonExpiring))
 	}
 	return s.operationResult(receipt, applied, token, err, req.ClientID, cred.ID)
 }
@@ -210,7 +213,7 @@ func (s *Service) RotateOnce(ctx context.Context, id string, req RotateRequest) 
 	}
 	spec, err := operationSpec(id, "rotate", map[string]any{
 		"credential_id": req.CredentialID, "generation": req.ExpectedGeneration, "ttl": req.TTL, "grace": req.GracePeriod,
-	}, actor)
+	}, actor, req.NonExpiring)
 	if err != nil {
 		return OperationResult{}, err
 	}
@@ -220,7 +223,7 @@ func (s *Service) RotateOnce(ctx context.Context, id string, req RotateRequest) 
 	if req.ExpectedGeneration < 1 || req.ExpectedGeneration == math.MaxInt64 || req.GracePeriod < 0 {
 		return OperationResult{}, ErrInvalid
 	}
-	version, token, err := s.secret(req.CredentialID, req.ExpectedGeneration+1, req.TTL)
+	version, token, err := s.secret(req.CredentialID, req.ExpectedGeneration+1, req.TTL, req.NonExpiring)
 	if err != nil {
 		return OperationResult{}, err
 	}
@@ -228,11 +231,11 @@ func (s *Service) RotateOnce(ctx context.Context, id string, req RotateRequest) 
 	var applied bool
 	if s.settings.audit {
 		receipt, applied, err = audited.RotateOnceAudited(
-			ctx, actor, spec, req.CredentialID, req.ExpectedGeneration, version, mustTTL(s, req.TTL), req.GracePeriod,
+			ctx, actor, spec, req.CredentialID, req.ExpectedGeneration, version, mustTTL(s, req.TTL, req.NonExpiring), req.GracePeriod,
 		)
 	} else {
 		receipt, applied, err = store.RotateOnce(
-			ctx, spec, req.CredentialID, req.ExpectedGeneration, version, mustTTL(s, req.TTL), req.GracePeriod,
+			ctx, spec, req.CredentialID, req.ExpectedGeneration, version, mustTTL(s, req.TTL, req.NonExpiring), req.GracePeriod,
 		)
 	}
 	return s.operationResult(receipt, applied, token, err, "", req.CredentialID)
@@ -247,7 +250,10 @@ func (s *Service) operationResult(
 	result := OperationResult{Receipt: receipt}
 	if applied {
 		s.invalidateFor(clientID, credentialID)
-		result.Issued = &Issued{Credential: receipt.Credential, Token: token, ExpiresAt: receipt.Version.ExpiresAt}
+		result.Issued = &Issued{
+			Credential: receipt.Credential, Token: token,
+			ExpiresAt: receipt.Version.ExpiresAt, NonExpiring: receipt.Version.NonExpiring,
+		}
 	}
 	return result, nil
 }

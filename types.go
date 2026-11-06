@@ -39,12 +39,14 @@ type Credential struct {
 
 // SecretVersion contains verification material, never a plaintext secret.
 // ExpiresAt includes any earlier retirement deadline introduced by rotation.
+// NonExpiring requires a zero ExpiresAt; finite versions require a nonzero expiry.
 type SecretVersion struct {
 	ID           string
 	CredentialID string
 	Generation   int64
 	Digest       [32]byte
 	ExpiresAt    time.Time
+	NonExpiring  bool `json:"non_expiring"`
 	CreatedAt    time.Time
 }
 
@@ -64,22 +66,25 @@ type Principal struct {
 // Issued is the only administrative result containing the plaintext token.
 // Do not log or persist Token. It cannot be recovered from the store.
 type Issued struct {
-	Credential Credential `json:"credential"`
-	Token      string     `json:"token"`
-	ExpiresAt  time.Time  `json:"expires_at"`
+	NonExpiring bool       `json:"non_expiring"`
+	Credential  Credential `json:"credential"`
+	Token       string     `json:"token"`
+	ExpiresAt   time.Time  `json:"expires_at"`
 }
 
 type IssueRequest struct {
-	ClientID string
-	Name     string
-	Scopes   []string
-	TTL      time.Duration // Zero uses Config.DefaultTTL.
+	NonExpiring bool
+	ClientID    string
+	Name        string
+	Scopes      []string
+	TTL         time.Duration // Zero uses Config.DefaultTTL unless NonExpiring is true.
 }
 
 type RotateRequest struct {
+	NonExpiring        bool
 	CredentialID       string
 	ExpectedGeneration int64
-	TTL                time.Duration // Zero uses Config.DefaultTTL.
+	TTL                time.Duration // Zero uses Config.DefaultTTL unless NonExpiring is true.
 	GracePeriod        time.Duration // Zero immediately retires the current secret.
 }
 
@@ -107,6 +112,12 @@ type Store interface {
 	// Snapshot is all-or-nothing, keyed by secret version ID; expired or revoked
 	// rows may be omitted. Partial query/scan/iteration results are errors.
 	Snapshot(ctx context.Context) (map[string]Record, error)
+}
+
+// NonExpiringStore advertises explicit support for zero-expiry permanent secrets.
+// Stores must preserve the flag and enforce finite retirement during rotation.
+type NonExpiringStore interface {
+	SupportsNonExpiring() bool
 }
 
 // TimedStore is an optional Store capability for assigning Issue and Rotate

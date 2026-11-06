@@ -60,7 +60,8 @@ func (s *Store) Operation(ctx context.Context, id string) (api.OperationReceipt,
 
 func safeVersion(v api.SecretVersion) api.SecretVersionInfo {
 	return api.SecretVersionInfo{
-		ID: v.ID, CredentialID: v.CredentialID, Generation: v.Generation, CreatedAt: v.CreatedAt, ExpiresAt: v.ExpiresAt,
+		ID: v.ID, CredentialID: v.CredentialID, Generation: v.Generation, CreatedAt: v.CreatedAt,
+		ExpiresAt: v.ExpiresAt, NonExpiring: v.NonExpiring,
 	}
 }
 

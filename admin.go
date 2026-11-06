@@ -127,12 +127,12 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (Issued, error) {
 		Generation: 1,
 		CreatedAt:  s.settings.now().UTC(),
 	}
-	version, token, err := s.secret(credential.ID, 1, req.TTL)
+	version, token, err := s.secret(credential.ID, 1, req.TTL, req.NonExpiring)
 	if err != nil {
 		return Issued{}, err
 	}
 	if timed, ok := store.(TimedStore); ok {
-		credential, version, err = timed.IssueWithLifetime(ctx, credential, version, mustTTL(s, req.TTL))
+		credential, version, err = timed.IssueWithLifetime(ctx, credential, version, mustTTL(s, req.TTL, req.NonExpiring))
 	} else {
 		err = store.Issue(ctx, credential, version)
 	}
@@ -140,7 +140,7 @@ func (s *Service) Issue(ctx context.Context, req IssueRequest) (Issued, error) {
 		return Issued{}, s.writeError(err, req.ClientID, credential.ID)
 	}
 	s.invalidateFor(req.ClientID, credential.ID)
-	return Issued{Credential: credential, Token: token, ExpiresAt: version.ExpiresAt}, nil
+	return Issued{Credential: credential, Token: token, ExpiresAt: version.ExpiresAt, NonExpiring: version.NonExpiring}, nil
 }
 
 func (s *Service) Rotate(ctx context.Context, req RotateRequest) (Issued, error) {
@@ -156,14 +156,14 @@ func (s *Service) Rotate(ctx context.Context, req RotateRequest) (Issued, error)
 	if req.ExpectedGeneration < 1 || req.ExpectedGeneration == math.MaxInt64 || req.GracePeriod < 0 {
 		return Issued{}, ErrInvalid
 	}
-	version, token, err := s.secret(req.CredentialID, req.ExpectedGeneration+1, req.TTL)
+	version, token, err := s.secret(req.CredentialID, req.ExpectedGeneration+1, req.TTL, req.NonExpiring)
 	if err != nil {
 		return Issued{}, err
 	}
 	var credential Credential
 	if timed, ok := store.(TimedStore); ok {
 		credential, version, err = timed.RotateWithLifetime(
-			ctx, req.CredentialID, req.ExpectedGeneration, version, mustTTL(s, req.TTL), req.GracePeriod,
+			ctx, req.CredentialID, req.ExpectedGeneration, version, mustTTL(s, req.TTL, req.NonExpiring), req.GracePeriod,
 		)
 	} else {
 		credential, err = store.Rotate(ctx, req.CredentialID, req.ExpectedGeneration, version, req.GracePeriod, version.CreatedAt)
@@ -172,11 +172,14 @@ func (s *Service) Rotate(ctx context.Context, req RotateRequest) (Issued, error)
 		return Issued{}, s.writeError(err, "", req.CredentialID)
 	}
 	s.invalidateFor("", req.CredentialID)
-	return Issued{Credential: credential, Token: token, ExpiresAt: version.ExpiresAt}, nil
+	return Issued{Credential: credential, Token: token, ExpiresAt: version.ExpiresAt, NonExpiring: version.NonExpiring}, nil
 }
 
 // secret validated this TTL before the TimedStore path is reached.
-func mustTTL(s *Service, ttl time.Duration) time.Duration {
+func mustTTL(s *Service, ttl time.Duration, nonExpiring bool) time.Duration {
+	if nonExpiring {
+		return 0
+	}
 	if ttl == 0 {
 		return s.cfg.DefaultTTL
 	}

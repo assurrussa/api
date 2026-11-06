@@ -28,7 +28,7 @@ before the compatibility commitments of `v1`; contract changes are described in 
 - `Client`: a service or integration, its state, and its allowed scopes.
 - `Credential`: a named client credential with a permanent ID and its own
   scopes. One client can have several independent credentials.
-- `SecretVersion`: a secret version with a mandatory expiration time. Rotation
+- `SecretVersion`: a secret version with an explicit lifetime. Rotation
   preserves the Credential, replaces the secret, and increments the generation.
 - `Principal`: verified identifiers and the intersection of the client's and
   Credential's scopes. The host project checks ownership of orders, files,
@@ -49,7 +49,20 @@ and rotation; it cannot be recovered or displayed again.
 Do not log `Issued.Token`, Authorization, or issuance response bodies.
 
 `DefaultTTL` and `MaxTTL` are mandatory and set by the project. A zero operation
-TTL uses DefaultTTL; values above MaxTTL are rejected. Tokens cannot be permanent.
+TTL uses DefaultTTL; values above MaxTTL are rejected.
+Explicit permanent issuance requires `WithNonExpiring()` on the Service and
+`NonExpiring: true, TTL: 0` in `IssueRequest` or `RotateRequest`. A nonzero TTL
+with that flag is invalid. Finite defaults and limits remain mandatory.
+Permanent results expose `NonExpiring: true` and a zero `time.Time` in `ExpiresAt`;
+JSON adds `non_expiring` while preserving the existing time fields.
+Existing permanent credentials authenticate even without the issuance option.
+This v0.x addition changes positional struct literals for the extended request
+and result types; consumers must use keyed literals.
+The PostgreSQL migration `003_non_expiring.sql` makes `expires_at` nullable:
+SQL `NULL` means permanent. Apply migrations before enabling the option; old
+adapters without `NonExpiringStore.SupportsNonExpiring() bool` are rejected with
+`ErrUnsupported` when opting in. Optional `TimedStore` signatures are unchanged:
+permanent writes pass zero TTL together with `SecretVersion.NonExpiring`.
 The PostgreSQL Store sets the issuance time and grace start after acquiring the
 required locks; `Issued.ExpiresAt` contains the expiration time actually stored.
 External Store implementations can implement the optional `TimedStore` for the same semantics.
@@ -60,7 +73,9 @@ not been revoked and the client is not banned.
 
 Rotation accepts `ExpectedGeneration` to protect against concurrent replacements
 and `GracePeriod` for the transition. Zero invalidates the previously current
-secret. A positive period is capped by that secret's original expiration time.
+secret. A positive period is capped by that secret's original expiration time; a permanent
+previous version becomes finite at the grace deadline. Rotations support every
+combination of finite and permanent versions.
 Repeated rotations do not extend previously assigned transition deadlines;
 several unexpired transition versions may remain valid at the same time.
 

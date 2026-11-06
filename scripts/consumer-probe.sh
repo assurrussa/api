@@ -202,8 +202,9 @@ EOF
     go mod verify
     go list -m -f '{{.Path}} {{.Version}} {{.Sum}} {{.GoModSum}}' github.com/assurrussa/api
   fi
-  # Compile legacy positional literals separately: this deliberately checks
-  # source compatibility without asking vet to approve positional API usage.
+  # Compile unchanged legacy positional literals separately from vet.
+  # Types extended for explicit permanent credentials use keyed literals; adding
+  # fields necessarily changes their v0.x positional construction contract.
   cat > "$probe_dir/legacy_literals.go" <<'EOF'
 package legacy
 
@@ -216,11 +217,11 @@ var (
     _ = api.Config{nil, time.Hour, time.Hour}
     _ = api.Client{"client", "name", nil, false, time.Time{}}
     _ = api.Credential{"credential", "client", "name", nil, 1, nil, time.Time{}}
-    _ = api.SecretVersion{"version", "credential", 1, [32]byte{}, time.Time{}, time.Time{}}
+    _ = api.SecretVersion{ID: "version", CredentialID: "credential", Generation: 1, ExpiresAt: time.Time{}}
     _ = api.Principal{"client", "credential", nil}
-    _ = api.Issued{api.Credential{}, "token", time.Time{}}
-    _ = api.IssueRequest{"client", "name", nil, time.Hour}
-    _ = api.RotateRequest{"credential", 1, time.Hour, 0}
+    _ = api.Issued{Credential: api.Credential{}, Token: "token", ExpiresAt: time.Time{}}
+    _ = api.IssueRequest{ClientID: "client", Name: "name", TTL: time.Hour}
+    _ = api.RotateRequest{CredentialID: "credential", ExpectedGeneration: 1, TTL: time.Hour}
     _ = api.Record{api.Client{}, api.Credential{}, api.SecretVersion{}}
     _ = api.ReadResult{api.Record{}, time.Time{}, 1}
     _ = api.Snapshot{nil, time.Time{}, 1}
