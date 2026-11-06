@@ -59,8 +59,14 @@ Existing permanent credentials authenticate even without the issuance option.
 This v0.x addition changes positional struct literals for the extended request
 and result types; consumers must use keyed literals.
 The PostgreSQL migration `003_non_expiring.sql` makes `expires_at` nullable:
-SQL `NULL` means permanent. Apply migrations before enabling the option; old
-adapters without `NonExpiringStore.SupportsNonExpiring() bool` are rejected with
+SQL `NULL` means permanent. Roll out in this order: expand the schema with the
+migration, upgrade **all** readers, writers, cache builders, and administrative
+processes to the new API version, then enable permanent issuance. Old binaries
+cannot read NULL expiries. Rolling back to an old binary is prohibited while
+any NULL-expiry rows remain; an operator must explicitly convert those versions
+to finite lifetimes or reissue credentials before rollback. There is no automatic
+down migration or automatic conversion of permanent credentials.
+Adapters without `NonExpiringStore.SupportsNonExpiring() bool` are rejected with
 `ErrUnsupported` when opting in. Optional `TimedStore` signatures are unchanged:
 permanent writes pass zero TTL together with `SecretVersion.NonExpiring`.
 The PostgreSQL Store sets the issuance time and grace start after acquiring the
