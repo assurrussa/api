@@ -15,7 +15,7 @@ HTTP API и интерфейс `goadmin` в первую версию не вх�
 Указывайте конкретную опубликованную версию:
 
 ```sh
-go get github.com/assurrussa/api@v0.1.0
+go get github.com/assurrussa/api@v0.2.0
 ```
 
 Лицензия — [MIT](../LICENSE). Поддерживаемые import paths: корневой пакет
